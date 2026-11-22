@@ -7,6 +7,8 @@ import {
   generateWeekSessions,
   evaluateAdaptation,
   planModeSwitch,
+  predictHyroxFinish,
+  analyzeRaceResult,
 } from "../index";
 import type { BenchmarkInput, GoalFocus, TrainingMode } from "@/types";
 
@@ -313,5 +315,213 @@ describe("planModeSwitch", () => {
     });
     expect(plan.fromMode).toBe("crossfit");
     expect(plan.toMode).toBe("maintenance");
+  });
+});
+
+describe("predictHyroxFinish", () => {
+  it("returns null when no inputs are provided", () => {
+    const p = predictHyroxFinish({});
+    expect(p.predictedFinishSec).toBeNull();
+    expect(p.confidence).toBe("low");
+    expect(p.inputsUsed.length).toBe(0);
+  });
+
+  it("predicts from 5 km time alone", () => {
+    const p = predictHyroxFinish({ fiveKmSec: 22 * 60 });
+    expect(p.predictedFinishSec).not.toBeNull();
+    expect(p.predictedFinishSec!).toBeGreaterThan(30 * 60);
+    expect(p.predictedFinishSec!).toBeLessThan(120 * 60);
+    expect(p.confidence).toBe("low");
+    expect(p.inputsUsed.some((s) => s.includes("5 km"))).toBe(true);
+  });
+
+  it("predicts from 1 km pace when 5 km not provided", () => {
+    const p = predictHyroxFinish({ oneKmPaceSec: 270 });
+    expect(p.predictedFinishSec).not.toBeNull();
+    expect(p.inputsUsed.some((s) => s.includes("1 km pace"))).toBe(true);
+  });
+
+  it("uses erg scores for station estimate", () => {
+    const p = predictHyroxFinish({
+      fiveKmSec: 20 * 60,
+      skierg1kSec: 200,
+      row2kSec: 420,
+    });
+    expect(p.predictedFinishSec).not.toBeNull();
+    expect(p.confidence).toBe("high");
+    expect(p.inputsUsed.some((s) => s.includes("SkiErg"))).toBe(true);
+    expect(p.inputsUsed.some((s) => s.includes("Row"))).toBe(true);
+  });
+
+  it("blends prior HYROX result 50/50 with predicted", () => {
+    const prior = 75 * 60;
+    const p = predictHyroxFinish({
+      fiveKmSec: 22 * 60,
+      priorHyroxFinishSec: prior,
+    });
+    expect(p.predictedFinishSec).not.toBeNull();
+    // Should be between predicted-from-5k and prior, blended
+    expect(p.inputsUsed.some((s) => s.includes("Prior HYROX"))).toBe(true);
+    expect(p.confidence).toBe("moderate");
+  });
+
+  it("falls back to prior HYROX alone when no other inputs", () => {
+    const prior = 80 * 60;
+    const p = predictHyroxFinish({ priorHyroxFinishSec: prior });
+    expect(p.predictedFinishSec).toBe(prior);
+    expect(p.inputsUsed[0]).toContain("Prior HYROX");
+  });
+
+  it("returns high confidence with 3+ inputs", () => {
+    const p = predictHyroxFinish({
+      fiveKmSec: 20 * 60,
+      skierg1kSec: 200,
+      row2kSec: 420,
+      priorHyroxFinishSec: 70 * 60,
+    });
+    expect(p.confidence).toBe("high");
+  });
+
+  it("computes pace per km when finish is predicted", () => {
+    const p = predictHyroxFinish({ fiveKmSec: 20 * 60 });
+    expect(p.pacePerKmSec).not.toBeNull();
+    expect(p.pacePerKmSec!).toBeGreaterThan(0);
+    // pace / 8 km
+    expect(p.pacePerKmSec).toBe(Math.round((p.predictedFinishSec as number) / 8));
+  });
+
+  it("includes a human-readable method explanation", () => {
+    const p = predictHyroxFinish({ fiveKmSec: 22 * 60 });
+    expect(p.method).toContain("5 km pace");
+    expect(p.method).toContain("transitions");
+  });
+});
+
+describe("analyzeRaceResult", () => {
+  it("formats finish time correctly", () => {
+    const a = analyzeRaceResult({ format: "hyrox", finishSec: 4500 });
+    expect(a.finishFormatted).toBe("1:15:00");
+  });
+
+  it("returns first_race verdict when no previous result", () => {
+    const a = analyzeRaceResult({ format: "hyrox", finishSec: 4500 });
+    expect(a.vsPrevious?.verdict).toBe("first_race");
+  });
+
+  it("detects improvement vs previous race", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 4500,
+      previousResultSec: 4800,
+    });
+    expect(a.vsPrevious?.verdict).toBe("improved");
+    expect(a.vsPrevious!.deltaSec).toBe(-300);
+  });
+
+  it("detects regression vs previous race", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 5000,
+      previousResultSec: 4500,
+    });
+    expect(a.vsPrevious?.verdict).toBe("regressed");
+  });
+
+  it("detects same finish within 0.5% tolerance", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 4500,
+      previousResultSec: 4505,
+    });
+    expect(a.vsPrevious?.verdict).toBe("same");
+  });
+
+  it("detects faster than target", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 4500,
+      targetSec: 4800,
+    });
+    expect(a.vsTarget?.verdict).toBe("faster");
+    expect(a.vsTarget!.deltaSec).toBe(-300);
+  });
+
+  it("detects slower than target", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 5000,
+      targetSec: 4800,
+    });
+    expect(a.vsTarget?.verdict).toBe("slower");
+  });
+
+  it("detects on_target within 1% tolerance", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 4800,
+      targetSec: 4820,
+    });
+    expect(a.vsTarget?.verdict).toBe("on_target");
+  });
+
+  it("returns no_target when no target provided", () => {
+    const a = analyzeRaceResult({ format: "hyrox", finishSec: 4500 });
+    expect(a.vsTarget).toBeNull();
+  });
+
+  it("identifies strongest and weakest splits", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 4500,
+      splits: [
+        { name: "SkiErg", sec: 200 },
+        { name: "Sled Pull", sec: 320 },
+        { name: "Row", sec: 240 },
+      ],
+    });
+    expect(a.strongestSplit?.name).toBe("SkiErg");
+    expect(a.strongestSplit!.sec).toBe(200);
+    expect(a.weakestSplit?.name).toBe("Sled Pull");
+    expect(a.weakestSplit!.sec).toBe(320);
+  });
+
+  it("returns null strongest/weakest when no splits provided", () => {
+    const a = analyzeRaceResult({ format: "hyrox", finishSec: 4500 });
+    expect(a.strongestSplit).toBeNull();
+    expect(a.weakestSplit).toBeNull();
+  });
+
+  it("includes summary string with finish and verdicts", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 4500,
+      targetSec: 4800,
+      previousResultSec: 4700,
+    });
+    expect(a.summary).toContain("HYROX");
+    expect(a.summary).toContain("1:15:00");
+    expect(a.summary).toContain("faster");
+    // Engine uses "Improved" (capital I) as the verdict sentence starts with it
+    expect(a.summary).toContain("Improved");
+  });
+
+  it("generates recommendations based on weaknesses", () => {
+    const a = analyzeRaceResult({
+      format: "hyrox",
+      finishSec: 5000,
+      targetSec: 4500,
+      splits: [
+        { name: "SkiErg", sec: 200 },
+        { name: "Sled Pull", sec: 360 },
+      ],
+    });
+    expect(a.recommendations.length).toBeGreaterThan(0);
+    expect(a.recommendations.some((r) => r.includes("Sled Pull"))).toBe(true);
+    expect(a.recommendations.some((r) => r.includes("race-pace"))).toBe(true);
+  });
+
+  it("returns 'maintain' recommendation when no issues found", () => {
+    const a = analyzeRaceResult({ format: "hyrox", finishSec: 4500 });
+    expect(a.recommendations.some((r) => r.includes("Maintain"))).toBe(true);
   });
 });

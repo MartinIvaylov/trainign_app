@@ -4,7 +4,7 @@ import { useApp } from "@/store/app-store";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutDashboard, CalendarDays, Dumbbell, Trophy, BarChart3,
-  Brain, Users, Settings, LogOut, ChevronRight, Bell, ClipboardList,
+  Brain, Users, Settings, LogOut, ChevronRight, Bell, ClipboardList, Building2,
 } from "lucide-react";
 import { DashboardView } from "@/components/hybrid/views/dashboard";
 import { PlanView } from "@/components/hybrid/views/plan";
@@ -17,6 +17,7 @@ import { CommunityView } from "@/components/hybrid/views/community";
 import { ProfileView } from "@/components/hybrid/views/profile";
 import { SettingsView } from "@/components/hybrid/views/settings";
 import { CoachDashboardView } from "@/components/hybrid/views/coach-dashboard";
+import { GymView } from "@/components/hybrid/views/gym";
 import { MODE_META } from "@/types";
 
 const NAV = [
@@ -32,6 +33,7 @@ const NAV = [
 
 const SECONDARY_NAV = [
   { slug: "coach_dashboard", label: "Coach Dashboard", icon: ClipboardList, tierRequired: ["coach", "gym"] as const },
+  { slug: "gym", label: "Gym", icon: Building2, tierRequired: ["gym"] as const },
   { slug: "profile", label: "Profile", icon: Users },
   { slug: "settings", label: "Settings", icon: Settings },
 ] as const;
@@ -182,6 +184,7 @@ export function AppShell() {
               {appView === "profile" && <ProfileView />}
               {appView === "settings" && <SettingsView />}
               {appView === "coach_dashboard" && <CoachDashboardView />}
+              {appView === "gym" && <GymView />}
             </motion.div>
           </AnimatePresence>
         </main>

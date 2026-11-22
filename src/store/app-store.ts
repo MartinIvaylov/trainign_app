@@ -35,7 +35,8 @@ type AppView =
   | "community"
   | "profile"
   | "settings"
-  | "coach_dashboard";
+  | "coach_dashboard"
+  | "gym";
 
 interface CompetitionLite {
   format: TrainingMode;

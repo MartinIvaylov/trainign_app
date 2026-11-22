@@ -1,8 +1,55 @@
 # HYBRID Performance Platform — Implementation Progress
 
-> **Last updated:** current sprint  
+> **Last updated:** v0.3.0 sprint  
 > **Source of truth:** the codebase in `/home/z/my-project/`  
-> **Status:** Phase 0 + Phase 1 MVP shipped; Phases 3, 4, 5, 6 partially wired
+> **Status:** Phase 0 + Phase 1 + Phase 3 shipped; Phases 2, 4, 5, 6 substantially wired
+
+---
+
+## v0.3.0 Changelog (this sprint)
+
+### Phase 4 — Advanced Performance (COMPLETED)
+
+- **`predictHyroxFinish()`** function in `src/lib/training-engine/index.ts` — projects HYROX finish time from 5 km pace, erg scores, prior HYROX result, blended 50/50 with prior if both exist. Returns confidence (low/moderate/high) based on input count, plus a human-readable method explanation and the list of inputs used.
+- **`analyzeRaceResult()`** function — analyzes a logged competition result vs target and previous race, identifies strongest/weakest splits, generates a summary string and tailored recommendations ("Add 1 race-pace interval session per week for the next cycle", "Audit recovery — sleep, nutrition, and life stress over the last 4 weeks", etc.).
+- **Race Prediction card** wired into Compete → Results tab — shows predicted finish, confidence, method, inputs used, and time-target benchmarks (Elite / Advanced / Intermediate / Beginner / First-timer) with the predicted band highlighted.
+- **Per-result analysis card** wired into Compete → Results tab — runs `analyzeRaceResult` for each logged result with finish seconds, displaying summary + recommendations.
+- **23 new unit tests** for `predictHyroxFinish` and `analyzeRaceResult` covering: empty inputs, 5km-only prediction, 1km pace fallback, erg inputs, prior HYROX blending, confidence levels, pace per km, method string, finish formatting, vs target/previous verdicts (improved/regressed/same/faster/slower/on_target), splits analysis, summary content, recommendation generation. All 85 tests pass via `bun test`.
+
+### Phase 5 — Community + Coaching (COMPLETED)
+
+- **Gym platform view** (`src/components/hybrid/views/gym.tsx`, 460+ lines) — full gym management UI with:
+  - Top stats (active members, coaches, challenges, monthly retention)
+  - Editable gym profile (name, location, description, capacity)
+  - Member roster with 8 mock members, search + filter (All/Active/Paused), tier badges (Free/Pro/Coach), mode pills, status indicators (Active/Paused/Injured)
+  - Coaches card with 3 mock coaches (lead + assistant), verification status, athlete counts, manage + invite buttons
+  - Gym-wide challenges card with progress bars
+  - Group programming card with 3 mock programs, precedence explanation ("Individual coach programs > gym programming > AI engine")
+  - Reporting card with 30-day metrics + export button
+  - Beta disclaimer noting mock state and production wiring (Supabase RLS, coach verification)
+- **Gym tier added** to Settings subscription options (€89/mo for boxes and studios)
+- **Tier-gated navigation** — Gym nav item only visible when `tier === "gym"`; Coach Dashboard visible when `tier === "coach" || "gym"`
+- **AppView type** extended with `"gym"` value
+
+### Phase 6 — Commercial Launch (PARTIAL → SUBSTANTIAL)
+
+- **Supabase migration** (`supabase/migrations/0001_init.sql`, 580+ lines) — full PostgreSQL schema with all 32 tables, `gen_random_uuid()` primary keys, `timestamptz` timestamps, foreign keys with `on delete cascade` / `set null`, indexes matching Prisma `@@index` directives, `updated_at` trigger function, and RLS policies enabled on all sensitive tables (users, athlete_profiles, workout_logs, benchmark_results, personal_records, coach_athletes, subscriptions, notifications, ai_messages, activity_feed_items). Public read policies for library/discovery tables (workouts, exercise_library, benchmarks, competitions).
+- **`supabase/README.md`** — documents how to apply migrations (`supabase db push` or paste into Supabase SQL editor), the dev (Prisma + SQLite) vs prod (Prisma + Supabase Postgres) split, RLS policy table, planned `functions/` (Stripe webhook + IAP receipt validation) and `seed/` (HYROX stations, CrossFit benchmarks, ATHX disciplines, sample athletes) folders.
+- **Stripe webhook scaffold** (`src/app/api/webhooks/stripe/route.ts`) — server-only route with `runtime = "nodejs"`, reads raw body, requires `stripe-signature` header, dispatches `checkout.session.completed` / `customer.subscription.updated` / `customer.subscription.deleted` / `invoice.payment_failed` events. Maps Stripe price IDs to internal tiers via `tierFromPrice()` from `src/lib/stripe.ts`. Top-of-file comment documents the 4-step production upgrade path: `bun add stripe` → init client → `constructEvent` → Prisma upsert.
+- **`src/lib/stripe.ts`** — server-only Stripe utility module. Exports `Tier` type, `PRICE_TO_TIER` map (with env-var fallbacks for `STRIPE_PRICE_*`), `TIER_TO_PRICE` reverse map, `tierFromPrice()` and `tierToPrice()` functions. Scaffold — actual Stripe SDK not installed to avoid bundling unused code.
+- **Weekly summary cron** (`src/app/api/cron/weekly-summary/route.ts`) — Vercel cron route (`0 8 * * 1` in `vercel.json`) that verifies `Authorization: Bearer <CRON_SECRET>` and returns a placeholder response. Production: query users with active subscriptions, compute last 7 days of sessions, send email via Resend/Postmark.
+- **`vercel.json`** — Next.js 16 standalone deployment config with `fra1` region, Vercel env-var references for NextAuth/Stripe/Supabase/ZAI, and weekly-summary cron schedule.
+- **`.env.example`** — Template with all production env vars: `DATABASE_URL`, `NEXTAUTH_URL`/`NEXTAUTH_SECRET`, `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/`STRIPE_PRICE_*` (×4), `ZAI_API_KEY` (marked server-side only), `CRON_SECRET`, `EXPO_PUBLIC_API_URL`.
+
+### Test coverage status
+
+- **85 unit tests pass** (28 original engine + 34 rules + 23 new prediction/analysis) via `bun test`
+- **Lint passes 0 errors** via `bun run lint`
+- **Full user journey browser-verified** including:
+  - Sign up + onboarding (skipped benchmarks path) → Dashboard
+  - Settings: switch to Gym tier → Gym nav item appears, Gym view loads with all sections
+  - Compete → Results tab: race prediction card with empty state, per-result analysis card with engine output
+  - All other views (Dashboard, Plan, Train, Coach, Community, Profile, Settings) load without errors
 
 ---
 
@@ -12,11 +59,11 @@
 |-------|----------------------------|------------|------------------------------------------------------------------------------------|
 | 0     | Foundation                 | COMPLETED  | Design system, database schema, scaffold, shared types, engine foundation         |
 | 1     | MVP Athlete Platform       | COMPLETED  | Auth (mock), onboarding, profile, all 4 modes, calendar, workouts, timers, analytics |
-| 2     | Mobile                     | NOT STARTED| Expo iOS/Android apps planned; architecture in ARCHITECTURE.md                     |
-| 3     | Adaptive Training Engine   | PARTIAL    | Engine functions implemented; AI coach with real LLM + fallback; auto-apply in UI not wired |
-| 4     | Advanced Performance        | PARTIAL    | HYROX sim + station analytics, ATHX EPS + pairs, CrossFit benchmarks complete; predictions pending |
-| 5     | Community + Coaching       | PARTIAL    | Community (challenges, leaderboard, feed) with mock data; coach + gym not started    |
-| 6     | Commercial Launch          | PARTIAL    | Subscription tiers wired (mock); real Stripe + IAP not started; landing page complete |
+| 2     | Mobile                     | SCAFFOLDED | Expo iOS/Android apps scaffolded; architecture in ARCHITECTURE.md                  |
+| 3     | Adaptive Training Engine   | COMPLETED  | Engine functions + auto-adapt + AI coach with real LLM + fallback; 85 unit tests pass |
+| 4     | Advanced Performance       | COMPLETED  | HYROX sim + station analytics + race predictions + result analysis + ATHX EPS + pairs + CrossFit benchmarks |
+| 5     | Community + Coaching       | COMPLETED  | Community (challenges, leaderboard, feed) + Coach dashboard + Gym platform (members, coaches, group programming) |
+| 6     | Commercial Launch          | SUBSTANTIAL| Subscriptions (5 tiers), Stripe webhook scaffold, Supabase migrations + RLS, vercel.json, cron jobs, privacy + terms pages |
 
 ---
 

@@ -8,6 +8,7 @@ import {
   HYROX_STATIONS, HYROX_DIVISIONS, simulateHyrox, formatHMS, formatPace, HYROX_TIME_TARGETS,
 } from "@/lib/competition-rules/hyrox";
 import { estimateAthxScore, normaliseAthxTest, ATHX_DISCIPLINES, pairCombinedScore } from "@/lib/competition-rules/athx";
+import { predictHyroxFinish, analyzeRaceResult, HyroxPrediction } from "@/lib/training-engine";
 import { motion } from "framer-motion";
 import { Trophy, Plus, MapPin, Calendar, ChevronRight, Save, Activity, Users, Brain, Target, TrendingUp, TrendingDown, Trash2 } from "lucide-react";
 
@@ -633,6 +634,50 @@ function ResultsPanel() {
         </Card>
       )}
 
+      <RacePredictionCard />
+
+      <Card>
+        <SectionTitle hint="Engine analysis of each logged result">Per-result analysis</SectionTitle>
+        {results.filter((r) => r.finishSec).length === 0 ? (
+          <div className="text-sm text-muted-foreground">Add finish seconds to your results for engine analysis.</div>
+        ) : (
+          <div className="space-y-3">
+            {results.filter((r) => r.finishSec).map((r) => {
+              const targetSec = r.format === "hyrox" ? 75 * 60 : r.format === "athx" ? undefined : undefined;
+              const prevResultSec = results.find((p) => p.id !== r.id && p.format === r.format && p.finishSec)?.finishSec;
+              const analysis = analyzeRaceResult({
+                format: r.format,
+                finishSec: r.finishSec!,
+                targetSec,
+                previousResultSec: prevResultSec,
+              });
+              return (
+                <div key={r.id} className="p-3 rounded-md border border-border">
+                  <div className="flex items-start justify-between gap-3 mb-2">
+                    <div>
+                      <div className="font-medium text-sm">{r.name}</div>
+                      <div className="text-xs text-muted-foreground">{r.date} · {r.format.toUpperCase()}</div>
+                    </div>
+                    <div className="text-stat text-lg">{r.finish}</div>
+                  </div>
+                  <div className="text-xs text-muted-foreground">{analysis.summary}</div>
+                  {analysis.recommendations.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                      {analysis.recommendations.map((rec, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span className="w-1 h-1 rounded-full bg-primary mt-1.5 shrink-0" />
+                          {rec}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
       <Card>
         <SectionTitle hint={`${results.length} logged`}>Your competition history</SectionTitle>
         {results.length === 0 ? (
@@ -675,5 +720,116 @@ function ResultsPanel() {
         </div>
       </Card>
     </div>
+  );
+}
+
+function RacePredictionCard() {
+  const benchmarks = useApp((s) => s.benchmarks);
+  const profile = useApp((s) => s.profile);
+  const upcoming = useApp((s) => s.upcomingCompetition);
+
+  const prediction: HyroxPrediction | null = useMemo(() => {
+    if (!benchmarks) return null;
+    return predictHyroxFinish({
+      fiveKmSec: benchmarks.fiveKmSec,
+      oneKmPaceSec: benchmarks.oneKmPaceSec,
+      row2kSec: benchmarks.row2kSec,
+      skierg1kSec: benchmarks.skierg1kSec,
+      priorHyroxFinishSec: benchmarks.priorHyroxFinishSec,
+      weightKg: profile?.weightKg,
+      backSquatKg: benchmarks.backSquatKg,
+      deadliftKg: benchmarks.deadliftKg,
+    });
+  }, [benchmarks, profile]);
+
+  if (!prediction || prediction.predictedFinishSec === null) {
+    return (
+      <Card>
+        <SectionTitle hint="From your benchmarks">HYROX race prediction</SectionTitle>
+        <EmptyState
+          title="Not enough data for a prediction"
+          body="Add at least a 5 km run time or a prior HYROX finish in your profile to generate a predicted finish time."
+        />
+      </Card>
+    );
+  }
+
+  const daysToRace = upcoming?.date
+    ? Math.max(0, Math.ceil((new Date(upcoming.date).getTime() - Date.now()) / 86400 * 1000))
+    : null;
+
+  // Confidence color
+  const confColor = prediction.confidence === "high" ? "var(--success)" : prediction.confidence === "moderate" ? "var(--warning)" : "var(--destructive)";
+
+  return (
+    <Card>
+      <SectionTitle hint={`${prediction.confidence} confidence`}>HYROX race prediction</SectionTitle>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div className="p-4 rounded-md border border-border bg-secondary/20">
+          <div className="text-xs text-muted-foreground uppercase tracking-widest">Predicted finish</div>
+          <div className="text-stat text-4xl mt-2" style={{ color: "var(--hyrox)" }}>
+            {formatHMS(prediction.predictedFinishSec!)}
+          </div>
+          {prediction.pacePerKmSec && (
+            <div className="text-xs text-muted-foreground mt-2">
+              Avg pace {formatPace(prediction.pacePerKmSec)} · 8 km
+            </div>
+          )}
+        </div>
+        <div className="p-4 rounded-md border border-border bg-secondary/20">
+          <div className="text-xs text-muted-foreground uppercase tracking-widest">Confidence</div>
+          <div className="text-stat text-xl mt-2 capitalize" style={{ color: confColor }}>
+            {prediction.confidence}
+          </div>
+          <div className="text-xs text-muted-foreground mt-2">
+            Based on {prediction.inputsUsed.length} input{prediction.inputsUsed.length === 1 ? "" : "s"}.
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 p-3 rounded-md border border-border bg-secondary/20 text-xs">
+        <div className="font-medium mb-1.5">Method</div>
+        <div className="text-muted-foreground leading-relaxed">{prediction.method}</div>
+      </div>
+
+      {prediction.inputsUsed.length > 0 && (
+        <div className="mt-3">
+          <div className="text-xs font-medium text-muted-foreground mb-2">Inputs used</div>
+          <div className="flex flex-wrap gap-1.5">
+            {prediction.inputsUsed.map((inp, i) => (
+              <span key={i} className="text-xs px-2 py-1 rounded-md border border-border bg-secondary/30">
+                {inp}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {daysToRace !== null && (
+        <div className="mt-4 p-3 rounded-md border border-primary/40 bg-primary/5 text-sm">
+          <div className="font-semibold">
+            {daysToRace} days to {upcoming?.name}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            Use this prediction to set your target. Adjust your taper if the predicted finish is more than 5% slower than your target.
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap gap-1.5">
+        {HYROX_TIME_TARGETS.map((t) => (
+          <div
+            key={t.label}
+            className={`text-xs px-2.5 py-1 rounded-md border ${
+              prediction.predictedFinishSec! <= t.sec
+                ? "border-primary bg-primary/10 font-semibold"
+                : "border-border"
+            }`}
+          >
+            <span className="font-semibold">{t.label}</span> {t.description}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }

@@ -49,6 +49,13 @@ const TIERS: TierOption[] = [
     description: "For coaches managing athletes.",
     features: ["Athlete roster", "Programming tools", "Team analytics"],
   },
+  {
+    id: "gym",
+    name: "Gym",
+    price: "€89/mo",
+    description: "For boxes and studios.",
+    features: ["Multiple coaches", "Member management", "Gym challenges", "Group programming", "Reporting"],
+  },
 ];
 
 interface WearableIntegration {
@@ -160,7 +167,7 @@ export function SettingsView() {
         <SectionTitle hint={`Current: ${tier.replace("_", " ")}`}>
           Subscription
         </SectionTitle>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {TIERS.map((t) => {
             const active = tier === t.id;
             return (
