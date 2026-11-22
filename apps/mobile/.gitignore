@@ -1,0 +1,12 @@
+node_modules
+.expo
+dist
+web-build
+*.tsbuildinfo
+app.json.bak
+.DS_Store
+google-service-account.json
+.env
+.env.local
+ios/
+android/

@@ -7,7 +7,7 @@ import {
 } from "@/components/hybrid/blocks/ui";
 import { motion } from "framer-motion";
 import {
-  Watch, Database, Info, Check, AlertTriangle, Heart, Smartphone, Activity, Zap,
+  Watch, Database, Info, Check, AlertTriangle, Heart, Smartphone, Activity, Zap, Shield, FileText,
 } from "lucide-react";
 
 type Tier = "free" | "pro" | "pro_annual" | "coach";
@@ -386,6 +386,20 @@ export function SettingsView() {
             CrossFit® are trademarks of their respective owners. Names are used
             only to describe compatible training formats.
           </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            onClick={() => { useApp.getState().setView("privacy"); }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs font-medium hover:bg-secondary transition"
+          >
+            <Shield className="w-3.5 h-3.5" /> Privacy Policy
+          </button>
+          <button
+            onClick={() => { useApp.getState().setView("terms"); }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs font-medium hover:bg-secondary transition"
+          >
+            <FileText className="w-3.5 h-3.5" /> Terms of Service
+          </button>
         </div>
       </Card>
     </motion.div>

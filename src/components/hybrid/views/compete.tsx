@@ -441,12 +441,239 @@ function AthxPairs() {
   );
 }
 
-function ScoreBox({ label, value, color, big }: { label: string; value: number; color: string; big?: boolean }) {
+function ScoreBox({ label: _label, value, color, big }: { label: string; value: number; color: string; big?: boolean }) {
   return (
     <div className={`p-4 rounded-md border border-border text-center ${big ? "bg-primary/10" : ""}`}>
-      <div className="text-xs font-medium text-muted-foreground uppercase tracking-widest">{label}</div>
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-widest">{_label}</div>
       <div className="mt-2 text-stat" style={{ fontSize: big ? "3rem" : "2rem", color }}>{value}</div>
       <div className="text-xs text-muted-foreground mt-1">/100</div>
+    </div>
+  );
+}
+
+function ResultsPanel() {
+  const pushToast = useApp((s) => s.pushToast);
+  const hyroxSims = useApp((s) => s.hyroxSimulations);
+  const [results, setResults] = useState<Array<{
+    id: string;
+    format: "hyrox" | "athx" | "crossfit";
+    name: string;
+    date: string;
+    division: string;
+    finish: string;
+    finishSec?: number;
+    rank?: number;
+    notes?: string;
+  }>>([
+    {
+      id: "r1",
+      format: "hyrox",
+      name: "HYROX London 2026",
+      date: "2026-10-12",
+      division: "Open (Men)",
+      finish: "1:18:30",
+      finishSec: 4710,
+      rank: 312,
+      notes: "Strongest station: SkiErg. Weakest: Sled Pull.",
+    },
+    {
+      id: "r2",
+      format: "athx",
+      name: "ATHX Qualifier 2026",
+      date: "2026-06-04",
+      division: "Individual",
+      finish: "EPS 64 (estimated)",
+      notes: "Strength 71, Endurance 58, MetCon-X 63. Not the official FitScore.",
+    },
+  ]);
+
+  const [form, setForm] = useState({
+    format: "hyrox" as "hyrox" | "athx" | "crossfit",
+    name: "",
+    date: "",
+    division: "",
+    finish: "",
+    finishSec: "",
+    rank: "",
+    notes: "",
+  });
+
+  function addResult() {
+    if (!form.name || !form.date) {
+      pushToast({ kind: "warning", title: "Add at least name and date" });
+      return;
+    }
+    const r = {
+      id: `r-${Date.now()}`,
+      format: form.format,
+      name: form.name,
+      date: form.date,
+      division: form.division || "—",
+      finish: form.finish || "—",
+      finishSec: form.finishSec ? parseInt(form.finishSec, 10) : undefined,
+      rank: form.rank ? parseInt(form.rank, 10) : undefined,
+      notes: form.notes || undefined,
+    };
+    setResults((prev) => [r, ...prev]);
+    setForm({ format: "hyrox", name: "", date: "", division: "", finish: "", finishSec: "", rank: "", notes: "" });
+    pushToast({ kind: "success", title: "Result logged", body: `${r.name} — ${r.finish}` });
+  }
+
+  function removeResult(id: string) {
+    setResults((prev) => prev.filter((r) => r.id !== id));
+  }
+
+  // Compute trends if we have multiple HYROX results
+  const hyroxResults = results.filter((r) => r.format === "hyrox" && r.finishSec).sort((a, b) => a.date.localeCompare(b.date));
+  const trend = hyroxResults.length >= 2
+    ? hyroxResults[hyroxResults.length - 1].finishSec! - hyroxResults[0].finishSec!
+    : null;
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <SectionTitle hint="Saved HYROX simulations">From your simulations</SectionTitle>
+        {hyroxSims.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No HYROX simulations saved yet. Run one in the HYROX tab.</div>
+        ) : (
+          <div className="space-y-2">
+            {hyroxSims.slice(0, 5).map((s, i) => (
+              <div key={i} className="flex items-center justify-between p-3 rounded-md border border-border">
+                <div>
+                  <div className="text-sm font-medium">Simulation {hyroxSims.length - i}</div>
+                  <div className="text-xs text-muted-foreground">{new Date(s.savedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
+                </div>
+                <div className="text-stat text-lg">{s.finishFormatted}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle hint="Manual entry">Log a competition result</SectionTitle>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <select
+            value={form.format}
+            onChange={(e) => setForm({ ...form, format: e.target.value as "hyrox" | "athx" | "crossfit" })}
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          >
+            <option value="hyrox">HYROX</option>
+            <option value="athx">ATHX</option>
+            <option value="crossfit">CrossFit</option>
+          </select>
+          <input
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="Event name (HYROX London 2027)"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            type="date"
+            value={form.date}
+            onChange={(e) => setForm({ ...form, date: e.target.value })}
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            value={form.division}
+            onChange={(e) => setForm({ ...form, division: e.target.value })}
+            placeholder="Division (Open, Pro, Doubles)"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            value={form.finish}
+            onChange={(e) => setForm({ ...form, finish: e.target.value })}
+            placeholder="Finish (1:18:30 or EPS 64)"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            value={form.finishSec}
+            onChange={(e) => setForm({ ...form, finishSec: e.target.value })}
+            placeholder="Finish seconds (optional, for trends)"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            value={form.rank}
+            onChange={(e) => setForm({ ...form, rank: e.target.value })}
+            placeholder="Rank (optional)"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            placeholder="Notes (strongest/weakest, conditions)"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+        </div>
+        <button
+          onClick={addResult}
+          className="mt-3 inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition"
+        >
+          <Plus className="w-4 h-4" /> Save result
+        </button>
+      </Card>
+
+      {trend !== null && (
+        <Card>
+          <SectionTitle hint="From logged HYROX results">HYROX finish time trend</SectionTitle>
+          <div className="flex items-center justify-between p-3 rounded-md border border-border bg-secondary/20">
+            <div>
+              <div className="text-sm text-muted-foreground">Change between first and latest result</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {hyroxResults[0].date.slice(0, 10)} → {hyroxResults[hyroxResults.length - 1].date.slice(0, 10)}
+              </div>
+            </div>
+            <div className={`text-stat text-2xl ${trend < 0 ? "text-success" : trend > 0 ? "text-destructive" : "text-muted-foreground"}`}>
+              {trend < 0 ? "-" : "+"}{formatHMS(Math.abs(trend))}
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-muted-foreground">
+            {trend < 0 ? "Improvement — your training is working." : trend > 0 ? "Slower than before — review your block before next race." : "Held pace. Look for marginal gains."}
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        <SectionTitle hint={`${results.length} logged`}>Your competition history</SectionTitle>
+        {results.length === 0 ? (
+          <EmptyState title="No results logged yet" body="Add your past competitions above to track trends." />
+        ) : (
+          <div className="space-y-2">
+            {results.map((r) => (
+              <div key={r.id} className="p-3 rounded-md border border-border">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <div className="w-1.5 h-12 rounded-full shrink-0" style={{ background: MODE_META[r.format].color }} />
+                    <div className="min-w-0">
+                      <div className="font-medium">{r.name}</div>
+                      <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span>{new Date(r.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span>
+                        <span>·</span>
+                        <span>{r.division}</span>
+                        {r.rank && (<><span>·</span><span>Rank #{r.rank}</span></>)}
+                      </div>
+                      {r.notes && <div className="text-xs text-muted-foreground mt-1.5 italic">"{r.notes}"</div>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <div className="text-stat text-base">{r.finish}</div>
+                    <button
+                      onClick={() => removeResult(r.id)}
+                      className="text-xs text-muted-foreground hover:text-destructive transition"
+                      aria-label="Delete result"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-4 text-xs text-muted-foreground">
+          HYBRID stores competition results you log. We do not scrape official event sites or imply affiliation with HYROX, ATHX or CrossFit.
+        </div>
+      </Card>
     </div>
   );
 }

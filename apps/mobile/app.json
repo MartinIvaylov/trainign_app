@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "HYBRID",
+    "slug": "hybrid-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "hybrid",
+    "splash": {
+      "backgroundColor": "#0E1116",
+      "resizeMode": "contain",
+      "image": "./assets/splash.png"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.hybridperf.mobile",
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "HYBRID reads workouts, runs, and heart-rate data to populate your training history.",
+        "NSHealthUpdateUsageDescription": "HYBRID logs completed workouts back to Apple Health.",
+        "NSMotionUsageDescription": "HYBRID uses motion data for GPS running and workout tracking."
+      },
+      "associatedDomains": ["applinks:hybrid.app"]
+    },
+    "android": {
+      "package": "com.hybridperf.mobile",
+      "permissions": [
+        "android.permission.ACTIVITY_RECOGNITION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.VIBRATE",
+        "android.permission.WAKE_LOCK",
+        "android.permission.RECEIVE_BOOT_COMPLETED"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      "expo-haptics",
+      "expo-keep-awake",
+      [
+        "expo-health",
+        {
+          "healthShareDescription": "HYBRID reads workouts and runs from Apple Health."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": { "projectId": "REPLACE_WITH_EAS_PROJECT_ID" },
+      "router": { "origin": "https://hybrid.app" }
+    },
+    "runtimeVersion": { "policy": "sdkVersion" },
+    "updates": { "url": "https://u.expo.dev/REPLACE_WITH_EAS_PROJECT_ID" }
+  }
+}

@@ -1,17 +1,18 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useApp } from "@/store/app-store";
 import { Card, PageHeader, StatCard, SectionTitle, MiniBar, EmptyState } from "@/components/hybrid/blocks/ui";
 import { MODE_META, TrainingMode } from "@/types";
 import { analyzeAthlete, generatePeriodization, generateWeekSessions } from "@/lib/training-engine";
+import { computeAutoAdaptation, applySuggestion, AdaptationSuggestion } from "@/lib/training-engine/auto-adapt";
 import { formatHMS, formatPace, HYROX_STATIONS, HYROX_TIME_TARGETS } from "@/lib/competition-rules/hyrox";
 import { estimateAthxScore, normaliseAthxTest, ATHX_DISCIPLINES } from "@/lib/competition-rules/athx";
 import { CROSSFIT_BENCHMARKS } from "@/lib/competition-rules/crossfit";
 import { motion } from "framer-motion";
 import {
   Activity, Brain, Calendar, ChevronRight, Clock, Dumbbell, Flame, Heart,
-  Target, Timer, Trophy, TrendingUp, Zap, ArrowRight, Plus, Play,
+  Target, Timer, Trophy, TrendingUp, Zap, ArrowRight, Plus, Play, ShieldAlert, Check,
 } from "lucide-react";
 
 export function DashboardView() {
@@ -379,6 +380,9 @@ export function DashboardView() {
         </Card>
       )}
 
+      {/* Auto-applied adaptation engine */}
+      <AdaptationPanel />
+
       {/* AI insights */}
       <Card>
         <SectionTitle hint="Auto-generated">AI coaching insights</SectionTitle>
@@ -526,5 +530,118 @@ function InsightRow({
         <div className="text-xs text-muted-foreground mt-0.5">{body}</div>
       </div>
     </div>
+  );
+}
+
+function AdaptationPanel() {
+  const logs = useApp((s) => s.logs);
+  const sessions = useApp((s) => s.sessions);
+  const prefs = useApp((s) => s.preferences);
+  const setSessions = useApp((s) => s.setSessions);
+  const pushToast = useApp((s) => s.pushToast);
+  const [appliedIds, setAppliedIds] = useState<Set<string>>(new Set());
+
+  const adaptation = useMemo(
+    () => computeAutoAdaptation({
+      logs,
+      sessions,
+      plannedDaysPerWeek: prefs?.daysPerWeek ?? 4,
+    }),
+    [logs, sessions, prefs],
+  );
+
+  function applyOne(s: AdaptationSuggestion) {
+    if (s.kind === "preserve" || appliedIds.has(s.id)) return;
+    const next = applySuggestion(sessions, s);
+    setSessions(next);
+    setAppliedIds((prev) => new Set([...prev, s.id]));
+    pushToast({
+      kind: "success",
+      title: "Adaptation applied",
+      body: s.label,
+    });
+  }
+
+  function applyAll() {
+    let next = sessions;
+    const applied: string[] = [];
+    adaptation.suggestions.forEach((s) => {
+      if (s.kind === "preserve" || appliedIds.has(s.id)) return;
+      next = applySuggestion(next, s);
+      applied.push(s.id);
+    });
+    if (applied.length === 0) return;
+    setSessions(next);
+    setAppliedIds((prev) => new Set([...prev, ...applied]));
+    pushToast({
+      kind: "success",
+      title: `${applied.length} adaptation${applied.length === 1 ? "" : "s"} applied`,
+      body: "Your training plan has been updated. You can revert in Plan tab.",
+    });
+  }
+
+  const allApplied = adaptation.suggestions.every(
+    (s) => s.kind === "preserve" || appliedIds.has(s.id),
+  );
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <SectionTitle hint="Auto-applied from last 7 days">Adaptation engine</SectionTitle>
+        </div>
+        <div className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded-md border ${
+          adaptation.shouldReduce || adaptation.shouldAddRecovery
+            ? "border-warning bg-warning/10 text-warning"
+            : "border-success bg-success/10 text-success"
+        }`}>
+          <ShieldAlert className="w-3.5 h-3.5" />
+          {adaptation.shouldReduce || adaptation.shouldAddRecovery ? "Adjustment recommended" : "On plan"}
+        </div>
+      </div>
+      <div className="text-xs text-muted-foreground mb-3 leading-relaxed">{adaptation.summary}</div>
+      <div className="space-y-2">
+        {adaptation.suggestions.map((s) => {
+          const applied = s.kind === "preserve" || appliedIds.has(s.id);
+          return (
+            <div
+              key={s.id}
+              className={`p-3 rounded-md border ${applied && s.kind !== "preserve" ? "border-success/40 bg-success/10" : "border-border bg-secondary/20"}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium flex items-center gap-2">
+                    {applied && s.kind !== "preserve" && <Check className="w-3.5 h-3.5 text-success" />}
+                    {s.label}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{s.detail}</div>
+                </div>
+                {s.kind !== "preserve" && (
+                  <button
+                    onClick={() => applyOne(s)}
+                    disabled={applied}
+                    className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition disabled:opacity-40 disabled:bg-secondary disabled:text-muted-foreground"
+                  >
+                    {applied ? "Applied" : "Apply"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {!allApplied && adaptation.suggestions.filter((s) => s.kind !== "preserve").length > 1 && (
+        <button
+          onClick={applyAll}
+          className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
+        >
+          Apply all recommendations <ChevronRight className="w-3 h-3" />
+        </button>
+      )}
+      <div className="mt-4 text-[11px] text-muted-foreground">
+        Engine rules: never stacks missed sessions, never exceeds planned weekly volume, never silently modifies a plan.
+        All changes require explicit confirmation.
+      </div>
+    </Card>
   );
 }
