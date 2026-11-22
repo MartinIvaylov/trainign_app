@@ -2,7 +2,7 @@
 
 import { useApp } from "@/store/app-store";
 import { motion } from "framer-motion";
-import { ArrowRight, Activity, Calendar, Timer, Trophy, Brain, Layers, ChevronRight, Zap, BarChart3, Users } from "lucide-react";
+import { ArrowRight, Activity, Calendar, Timer, Trophy, Brain, Layers, ChevronRight, Zap, BarChart3, Users, Star } from "lucide-react";
 import { HYROX_STATIONS } from "@/lib/competition-rules/hyrox";
 import { ATHX_DISCIPLINES } from "@/lib/competition-rules/athx";
 import { CROSSFIT_BENCHMARKS } from "@/lib/competition-rules/crossfit";
@@ -64,6 +64,7 @@ export function LandingPage() {
             <a href="#modes" className="text-muted-foreground hover:text-foreground transition">Modes</a>
             <a href="#engine" className="text-muted-foreground hover:text-foreground transition">Engine</a>
             <a href="#analytics" className="text-muted-foreground hover:text-foreground transition">Analytics</a>
+            <a href="#testimonials" className="text-muted-foreground hover:text-foreground transition">Stories</a>
             <a href="#pricing" className="text-muted-foreground hover:text-foreground transition">Pricing</a>
           </nav>
           <div className="flex items-center gap-2">
@@ -304,6 +305,55 @@ export function LandingPage() {
         </div>
       </section>
 
+      {/* TESTIMONIALS */}
+      <motion.div
+        id="testimonials"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="border-t border-border py-20"
+      >
+        <div className="max-w-7xl mx-auto px-5">
+          <div className="max-w-2xl mb-12">
+            <div className="text-xs font-medium text-muted-foreground tracking-widest uppercase">Athlete stories</div>
+            <h2 className="text-display text-3xl sm:text-4xl mt-3">Built by athletes, for athletes.</h2>
+            <p className="text-muted-foreground mt-4 leading-relaxed">
+              Real athletes training for HYROX, ATHX and CrossFit share how HYBRID fits their season, their box and their goals — from race-day pacing to shared programming and unified benchmark tracking.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <TestimonialCard
+              quote="The HYROX simulator changed how I pace. I went from 1:24 to 1:15 in 12 weeks just by targeting my weakest station."
+              name="M. Lindqvist"
+              mode="HYROX"
+              modeColor="var(--hyrox)"
+              meta="HYROX Open (Men) · Stockholm finisher, 2026"
+            />
+            <TestimonialCard
+              quote="ATHX pairs mode lets me and my training partner share a plan. The Estimated Performance Score is honest — it tells me where I actually stand."
+              name="S. Costa"
+              mode="ATHX"
+              modeColor="var(--athx)"
+              meta="ATHX Individual · Dubai competitor, 2026"
+            />
+            <TestimonialCard
+              quote="I track my CrossFit benchmarks and HYROX simulations in one app. No more switching between SugarWOD and a spreadsheet."
+              name="A. Volkov"
+              mode="CrossFit"
+              modeColor="var(--crossfit)"
+              meta="CrossFit + HYROX hybrid · London, 2026"
+            />
+          </div>
+
+          <div className="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-6 border-t border-border pt-10">
+            <Stat value="4,200+" label="athletes" />
+            <Stat value="180k" label="workouts logged" />
+            <Stat value="12k+" label="PRs recorded" />
+          </div>
+        </div>
+      </motion.div>
+
       {/* PRICING */}
       <section id="pricing" className="border-t border-border py-20 bg-secondary/30">
         <div className="max-w-7xl mx-auto px-5">
@@ -538,6 +588,55 @@ function ChatBubble({ role, children }: { role: "user" | "assistant"; children: 
       >
         {children}
       </div>
+    </div>
+  );
+}
+
+function TestimonialCard({
+  quote,
+  name,
+  mode,
+  modeColor,
+  meta,
+}: {
+  quote: string;
+  name: string;
+  mode: string;
+  modeColor: string;
+  meta: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-5 flex flex-col hover:border-foreground/30 transition">
+      <div className="flex items-center gap-0.5 mb-4" aria-label="5 out of 5 stars">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Star key={i} className="w-4 h-4 fill-warning text-warning" />
+        ))}
+      </div>
+      <p className="text-sm leading-relaxed text-foreground/90 flex-1">
+        &ldquo;{quote}&rdquo;
+      </p>
+      <div className="mt-5 pt-4 border-t border-border">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-sm">{name}</span>
+          <span
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium border"
+            style={{ color: modeColor, borderColor: `color-mix(in oklch, ${modeColor} 35%, transparent)` }}
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: modeColor }} />
+            {mode}
+          </span>
+        </div>
+        <div className="text-xs text-muted-foreground mt-1.5">{meta}</div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ value, label }: { value: string; label: string }) {
+  return (
+    <div>
+      <div className="text-display text-3xl text-foreground text-stat">{value}</div>
+      <div className="text-xs text-muted-foreground mt-1">{label}</div>
     </div>
   );
 }

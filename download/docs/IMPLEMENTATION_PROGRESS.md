@@ -6,6 +6,32 @@
 
 ---
 
+## v0.4.0 Changelog (this sprint)
+
+### Phase 3 — Adaptive Training Engine (ENHANCED)
+
+- **AI Coach recommendation storage** — new `CoachRecommendation` interface and store functions (`addRecommendation`, `applyRecommendation`, `dismissRecommendation`, `clearAppliedRecommendations`). Recommendations persist in localStorage via the Zustand store.
+- **"Save as recommendation" button** on every AI Coach response — click to store the answer as a structured recommendation with title (derived from first sentence), body, source ("ai_coach"), severity, original question, and timestamp.
+- **Recommendations panel** in the Coach tab — shows Pending / Applied / Dismissed sections with Apply / Dismiss / Clear actions. Each recommendation card displays the severity icon, title, original question, body (3-line clamp), date, and source badge.
+- **Full lifecycle**: pending → applied (with timestamp) or dismissed (with timestamp). Applied recommendations can be cleared in bulk. All state persists across page reloads via Zustand persist middleware.
+- **Browser-verified end-to-end**: ask coach → save recommendation → apply recommendation → recommendation moves from Pending to Applied section.
+
+### Phase 4 — Advanced Performance (ENHANCED)
+
+- **Race results store wiring** — Compete → Results panel now initializes from the store's `raceResults` array (falling back to seed data if empty). New results are persisted via `addRaceResult()` and deletions via `deleteRaceResult()`. Results now survive page reloads.
+
+### Phase 6 — Commercial Launch (ENHANCED)
+
+- **Marketing landing page testimonials** — new "Athlete Stories" section with 3 testimonials from HYROX, ATHX, and CrossFit athletes, 5-star ratings (lucide Star icons), athlete names with mode-colored pills, and a stats strip (4,200+ athletes, 180k workouts logged, 12k+ PRs recorded). Section ID `#testimonials` linked from the nav bar ("Stories").
+
+### Test coverage status
+
+- **85 unit tests pass** (28 engine + 34 rules + 23 prediction/analysis) via `bun test`
+- **Lint passes 0 errors** via `bun run lint`
+- **Browser-verified**: testimonials section renders on landing page, AI Coach recommendation save/apply flow works end-to-end, race results persist
+
+---
+
 ## v0.3.0 Changelog (this sprint)
 
 ### Phase 4 — Advanced Performance (COMPLETED)

@@ -112,6 +112,24 @@ export interface AthleteCheckin {
   notes?: string;
 }
 
+export interface CoachRecommendation {
+  id: string;
+  title: string;
+  body: string;
+  severity: "info" | "positive" | "warning" | "critical";
+  source: "ai_coach" | "engine" | "manual";
+  // Optional action the user can apply (e.g. "replace_session", "drop_intensity", "add_recovery")
+  actionKind?: "replace_session" | "drop_intensity" | "add_recovery" | "preserve" | "review_plan";
+  affectedSessionId?: string;
+  // Lifecycle: pending → applied | dismissed
+  status: "pending" | "applied" | "dismissed";
+  createdAt: string;
+  appliedAt?: string;
+  dismissedAt?: string;
+  // The original question that triggered this recommendation (for AI Coach source)
+  originalQuestion?: string;
+}
+
 interface AppState {
   // --- navigation
   view: View;
@@ -173,6 +191,13 @@ interface AppState {
 
   checkins: AthleteCheckin[];
   addCheckin: (c: Omit<AthleteCheckin, "id">) => void;
+
+  // --- coach recommendations (AI Coach + engine)
+  recommendations: CoachRecommendation[];
+  addRecommendation: (r: Omit<CoachRecommendation, "id" | "createdAt" | "status">) => string;
+  applyRecommendation: (id: string) => void;
+  dismissRecommendation: (id: string) => void;
+  clearAppliedRecommendations: () => void;
 
   // --- toasts
   toasts: ToastMessage[];
@@ -328,6 +353,35 @@ export const useApp = create<AppState>()(
       addCheckin: (c) =>
         set((state) => ({ checkins: [{ ...c, id: uuid() }, ...state.checkins].slice(0, 200) })),
 
+      recommendations: [],
+      addRecommendation: (r) => {
+        const id = uuid();
+        const rec: CoachRecommendation = {
+          ...r,
+          id,
+          createdAt: new Date().toISOString(),
+          status: "pending",
+        };
+        set((state) => ({ recommendations: [rec, ...state.recommendations].slice(0, 50) }));
+        return id;
+      },
+      applyRecommendation: (id) =>
+        set((state) => ({
+          recommendations: state.recommendations.map((r) =>
+            r.id === id ? { ...r, status: "applied" as const, appliedAt: new Date().toISOString() } : r,
+          ),
+        })),
+      dismissRecommendation: (id) =>
+        set((state) => ({
+          recommendations: state.recommendations.map((r) =>
+            r.id === id ? { ...r, status: "dismissed" as const, dismissedAt: new Date().toISOString() } : r,
+          ),
+        })),
+      clearAppliedRecommendations: () =>
+        set((state) => ({
+          recommendations: state.recommendations.filter((r) => r.status === "pending"),
+        })),
+
       toasts: [],
       pushToast: (t) => {
         const id = uuid();
@@ -366,6 +420,7 @@ export const useApp = create<AppState>()(
           coachAthletes: [],
           coachWorkouts: [],
           checkins: [],
+          recommendations: [],
           tier: "free",
           view: "landing",
         }),
@@ -391,6 +446,7 @@ export const useApp = create<AppState>()(
         coachAthletes: s.coachAthletes,
         coachWorkouts: s.coachWorkouts,
         checkins: s.checkins,
+        recommendations: s.recommendations,
         tier: s.tier,
       }),
     },

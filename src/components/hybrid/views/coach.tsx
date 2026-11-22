@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useApp } from "@/store/app-store";
-import { Card, PageHeader, SectionTitle } from "@/components/hybrid/blocks/ui";
+import { useApp, CoachRecommendation } from "@/store/app-store";
+import { Card, PageHeader, SectionTitle, EmptyState } from "@/components/hybrid/blocks/ui";
 import { motion } from "framer-motion";
-import { Brain, Send, User, Sparkles, RotateCcw, AlertCircle } from "lucide-react";
+import { Brain, Send, User, Sparkles, RotateCcw, AlertCircle, Bookmark, Check, X, Trash2, Clock } from "lucide-react";
 
 const SUGGESTED = [
   "What is my weakest HYROX station?",
@@ -19,6 +19,8 @@ interface Msg {
   role: "user" | "assistant";
   content: string;
   fallback?: boolean;
+  // Track which messages have been saved as recommendations
+  savedAsRec?: boolean;
 }
 
 export function CoachView() {
@@ -36,6 +38,11 @@ export function CoachView() {
   const prs = useApp((s) => s.prs);
   const hyroxSims = useApp((s) => s.hyroxSimulations);
   const pushToast = useApp((s) => s.pushToast);
+  const recommendations = useApp((s) => s.recommendations);
+  const addRecommendation = useApp((s) => s.addRecommendation);
+  const applyRecommendation = useApp((s) => s.applyRecommendation);
+  const dismissRecommendation = useApp((s) => s.dismissRecommendation);
+  const clearApplied = useApp((s) => s.clearAppliedRecommendations);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -94,6 +101,34 @@ export function CoachView() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function saveAsRecommendation(msgIndex: number) {
+    const msg = messages[msgIndex];
+    if (!msg || msg.role !== "assistant") return;
+    // Derive a title from the first sentence of the answer
+    const firstSentence = msg.content.split(/[.!?]\s/)[0].slice(0, 80);
+    const title = firstSentence.length > 0 ? firstSentence + (msg.content.length > firstSentence.length ? "…" : "") : "Coach recommendation";
+    addRecommendation({
+      title,
+      body: msg.content,
+      severity: "info",
+      source: "ai_coach",
+      // Find the user question that triggered this answer
+      originalQuestion: messages[msgIndex - 1]?.role === "user" ? messages[msgIndex - 1].content : undefined,
+    });
+    setMessages((prev) => prev.map((m, i) => i === msgIndex ? { ...m, savedAsRec: true } : m));
+    pushToast({ kind: "success", title: "Saved as recommendation", body: "Review it in the Recommendations panel below." });
+  }
+
+  function applyRec(id: string) {
+    applyRecommendation(id);
+    pushToast({ kind: "success", title: "Recommendation applied", body: "Marked as applied. Apply the suggested changes in your Plan tab." });
+  }
+
+  function dismissRec(id: string) {
+    dismissRecommendation(id);
+    pushToast({ kind: "info", title: "Recommendation dismissed" });
   }
 
   return (
@@ -155,6 +190,22 @@ export function CoachView() {
                   </div>
                 )}
                 <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
+                {m.role === "assistant" && !m.fallback && (
+                  <div className="mt-2 pt-2 border-t border-border/50">
+                    {m.savedAsRec ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-success font-medium">
+                        <Check className="w-3 h-3" /> Saved as recommendation
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => saveAsRecommendation(i)}
+                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary transition"
+                      >
+                        <Bookmark className="w-3 h-3" /> Save as recommendation
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
           ))}
@@ -197,6 +248,17 @@ export function CoachView() {
         </form>
       </Card>
 
+      {/* Recommendations panel */}
+      <RecommendationsPanel
+        recommendations={recommendations}
+        onApply={applyRec}
+        onDismiss={dismissRec}
+        onClearApplied={() => {
+          clearApplied();
+          pushToast({ kind: "info", title: "Applied recommendations cleared" });
+        }}
+      />
+
       <Card>
         <SectionTitle>How the coach reads your data</SectionTitle>
         <ul className="text-xs text-muted-foreground space-y-1.5">
@@ -208,5 +270,145 @@ export function CoachView() {
         </ul>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Recommendations panel — shows stored AI Coach / engine recommendations
+// with Apply / Dismiss / Clear actions.
+// ---------------------------------------------------------------------------
+
+function RecommendationsPanel({
+  recommendations,
+  onApply,
+  onDismiss,
+  onClearApplied,
+}: {
+  recommendations: CoachRecommendation[];
+  onApply: (id: string) => void;
+  onDismiss: (id: string) => void;
+  onClearApplied: () => void;
+}) {
+  const pending = recommendations.filter((r) => r.status === "pending");
+  const applied = recommendations.filter((r) => r.status === "applied");
+  const dismissed = recommendations.filter((r) => r.status === "dismissed");
+
+  const severityIcon = {
+    info: { icon: Sparkles, color: "var(--info)" },
+    positive: { icon: Check, color: "var(--success)" },
+    warning: { icon: AlertCircle, color: "var(--warning)" },
+    critical: { icon: AlertCircle, color: "var(--destructive)" },
+  };
+
+  return (
+    <Card>
+      <SectionTitle hint={`${pending.length} pending · ${applied.length} applied`}>
+        Saved recommendations
+      </SectionTitle>
+
+      {recommendations.length === 0 ? (
+        <EmptyState
+          title="No saved recommendations yet"
+          body="When the AI Coach suggests something, click 'Save as recommendation' on the message to store it here for review and apply."
+        />
+      ) : (
+        <div className="space-y-3">
+          {pending.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">Pending</div>
+              {pending.map((r) => {
+                const sev = severityIcon[r.severity];
+                const Icon = sev.icon;
+                return (
+                  <motion.div
+                    key={r.id}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-3 rounded-md border border-border bg-secondary/20"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-md grid place-items-center shrink-0" style={{ background: `color-mix(in oklch, ${sev.color} 15%, transparent)`, color: sev.color }}>
+                        <Icon className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm">{r.title}</div>
+                        {r.originalQuestion && (
+                          <div className="text-[10px] text-muted-foreground italic mt-0.5">Q: {r.originalQuestion}</div>
+                        )}
+                        <div className="text-xs text-muted-foreground mt-1.5 line-clamp-3">{r.body}</div>
+                        <div className="flex items-center gap-2 mt-3">
+                          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {new Date(r.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                          </span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground capitalize">{r.source.replace("_", " ")}</span>
+                          <div className="flex-1" />
+                          <button
+                            onClick={() => onApply(r.id)}
+                            className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground font-semibold hover:opacity-90 transition inline-flex items-center gap-1"
+                          >
+                            <Check className="w-3 h-3" /> Apply
+                          </button>
+                          <button
+                            onClick={() => onDismiss(r.id)}
+                            className="text-xs px-2.5 py-1 rounded-md border border-border hover:bg-secondary transition inline-flex items-center gap-1 text-muted-foreground"
+                          >
+                            <X className="w-3 h-3" /> Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+
+          {applied.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">Applied ({applied.length})</div>
+                <button
+                  onClick={onClearApplied}
+                  className="text-[10px] text-muted-foreground hover:text-destructive transition inline-flex items-center gap-1"
+                >
+                  <Trash2 className="w-3 h-3" /> Clear applied
+                </button>
+              </div>
+              {applied.slice(0, 5).map((r) => (
+                <div key={r.id} className="p-2.5 rounded-md border border-success/30 bg-success/5 opacity-70">
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3 h-3 text-success shrink-0" />
+                    <div className="text-xs font-medium truncate flex-1">{r.title}</div>
+                    {r.appliedAt && (
+                      <div className="text-[10px] text-muted-foreground shrink-0">
+                        {new Date(r.appliedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {applied.length > 5 && (
+                <div className="text-[10px] text-muted-foreground text-center">+ {applied.length - 5} more</div>
+              )}
+            </div>
+          )}
+
+          {dismissed.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">Dismissed ({dismissed.length})</div>
+              {dismissed.slice(0, 3).map((r) => (
+                <div key={r.id} className="p-2.5 rounded-md border border-border opacity-40">
+                  <div className="flex items-center gap-2">
+                    <X className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <div className="text-xs truncate flex-1">{r.title}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }

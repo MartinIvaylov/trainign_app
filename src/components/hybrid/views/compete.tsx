@@ -455,7 +455,23 @@ function ScoreBox({ label: _label, value, color, big }: { label: string; value: 
 function ResultsPanel() {
   const pushToast = useApp((s) => s.pushToast);
   const hyroxSims = useApp((s) => s.hyroxSimulations);
-  const [results, setResults] = useState<Array<{
+  const storeResults = useApp((s) => s.raceResults);
+  const addRaceResult = useApp((s) => s.addRaceResult);
+  const deleteRaceResult = useApp((s) => s.deleteRaceResult);
+
+  // Convert stored race results to the display format
+  const storedDisplay = storeResults.map((r) => ({
+    id: r.id,
+    format: r.format as "hyrox" | "athx" | "crossfit",
+    name: r.competitionName,
+    date: r.date,
+    division: r.division ?? "—",
+    finish: r.finishSec ? formatHMS(r.finishSec) : "—",
+    finishSec: r.finishSec,
+    notes: r.notes,
+  }));
+
+  const seedResults: Array<{
     id: string;
     format: "hyrox" | "athx" | "crossfit";
     name: string;
@@ -465,7 +481,7 @@ function ResultsPanel() {
     finishSec?: number;
     rank?: number;
     notes?: string;
-  }>>([
+  }> = [
     {
       id: "r1",
       format: "hyrox",
@@ -486,7 +502,9 @@ function ResultsPanel() {
       finish: "EPS 64 (estimated)",
       notes: "Strength 71, Endurance 58, MetCon-X 63. Not the official FitScore.",
     },
-  ]);
+  ];
+
+  const [results, setResults] = useState(storedDisplay.length > 0 ? storedDisplay : seedResults);
 
   const [form, setForm] = useState({
     format: "hyrox" as "hyrox" | "athx" | "crossfit",
@@ -504,6 +522,7 @@ function ResultsPanel() {
       pushToast({ kind: "warning", title: "Add at least name and date" });
       return;
     }
+    const finishSec = form.finishSec ? parseInt(form.finishSec, 10) : undefined;
     const r = {
       id: `r-${Date.now()}`,
       format: form.format,
@@ -511,17 +530,29 @@ function ResultsPanel() {
       date: form.date,
       division: form.division || "—",
       finish: form.finish || "—",
-      finishSec: form.finishSec ? parseInt(form.finishSec, 10) : undefined,
+      finishSec,
       rank: form.rank ? parseInt(form.rank, 10) : undefined,
       notes: form.notes || undefined,
     };
     setResults((prev) => [r, ...prev]);
+    // Also persist to store so results survive page reload
+    addRaceResult({
+      format: form.format,
+      competitionName: form.name,
+      date: form.date,
+      finishSec: finishSec ?? 0,
+      division: form.division || undefined,
+      notes: form.notes || undefined,
+    });
     setForm({ format: "hyrox", name: "", date: "", division: "", finish: "", finishSec: "", rank: "", notes: "" });
     pushToast({ kind: "success", title: "Result logged", body: `${r.name} — ${r.finish}` });
   }
 
   function removeResult(id: string) {
     setResults((prev) => prev.filter((r) => r.id !== id));
+    // Also remove from store if it exists there
+    const storeResult = storeResults.find((r) => r.id === id);
+    if (storeResult) deleteRaceResult(id);
   }
 
   // Compute trends if we have multiple HYROX results
