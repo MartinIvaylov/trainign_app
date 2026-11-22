@@ -1,0 +1,559 @@
+// HYBRID Performance Platform — Prisma schema
+// Tracks one athlete profile across HYROX, ATHX, CrossFit and Maintenance modes.
+// Designed for parity with the documented PostgreSQL/Supabase schema (see
+// docs/DATABASE_SCHEMA.md); SQLite is used in this preview build for
+// portability while the production target is Supabase Postgres.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & profile
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String?
+  name          String?
+  avatarUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  athleteProfile AthleteProfile?
+  coachProfile   CoachProfile?
+  subscription   Subscription?
+  activity       ActivityFeedItem[]
+  notifications  Notification[]
+  aiMessages     AiMessage[]
+  challenges     ChallengeParticipant[]
+}
+
+model AthleteProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName     String
+  bio             String?
+  avatarUrl       String?
+  dateOfBirth    DateTime?
+  age             Int?
+  heightCm        Float?
+  weightKg        Float?
+  sex             String? // "male" | "female" | "other" | "prefer_not"
+  trainingAge     String? // "beginner" | "intermediate" | "advanced" | "elite"
+  background      String   @default("general") // crossfit|hyrox|athx|running|gym|general|beginner
+  location        String?
+  primaryGoal     String?
+  onboardedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  preferences     AthletePreference?
+  goals           AthleteGoal[]
+  competitions    AthleteCompetition[]
+  plans           TrainingPlan[]
+  logs            WorkoutLog[]
+  benchmarks     BenchmarkResult[]
+  personalRecords PersonalRecord[]
+  raceResults     RaceResult[]
+  raceSplits      RaceSplit[]
+  metrics         AthleteMetric[]
+  recoveryLogs    RecoveryLog[]
+  wearables       WearableConnection[]
+  partnerships    Partnership[]
+  coachLinks      CoachAthlete[]
+  challenges      ChallengeParticipant[]
+}
+
+model AthletePreference {
+  id              String   @id @default(cuid())
+  athleteId       String   @unique
+  athlete         AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+
+  daysPerWeek     Int      @default(4)
+  sessionMinutes  Int      @default(60)
+  preferredDays   String   // CSV: "mon,wed,fri,sat"
+  equipment       String   // CSV list
+  location        String   @default("home_gym") // full_gym|box|home_gym|track|outdoors
+  injuries        String?  // free text, optional
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Training modes, goals, competitions
+// ---------------------------------------------------------------------------
+
+// Active training focus. One athlete may have several historical goals but
+// only one active at a time. Switching preserves history.
+model AthleteGoal {
+  id              String   @id @default(cuid())
+  athleteId       String
+  athlete         AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+
+  mode            String   // hyrox|athx|crossfit|maintenance
+  focus           String   // "first_race" | "improve_time" | "improve_strength" | "improve_endurance" | "general" | "advanced"
+  competitionId   String?
+  targetDate      DateTime?
+  targetTime      Int?     // seconds (race finish)
+  status          String   @default("active") // active|completed|paused|archived
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([athleteId, status])
+}
+
+model Competition {
+  id          String   @id @default(cuid())
+  format      String   // hyrox|athx|crossfit
+  name        String
+  city        String?
+  country     String?
+  date        DateTime
+  divisions   String?  // CSV
+  url         String?
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  athletes    AthleteCompetition[]
+
+  @@index([format, date])
+}
+
+model AthleteCompetition {
+  id            String   @id @default(cuid())
+  athleteId     String
+  athlete       AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  competitionId String
+  competition   Competition @relation(fields: [competitionId], references: [id])
+  division      String?
+  registeredAt  DateTime @default(now())
+
+  @@unique([athleteId, competitionId])
+}
+
+// ---------------------------------------------------------------------------
+// Training engine: plans, blocks, scheduled workouts
+// ---------------------------------------------------------------------------
+
+model TrainingPlan {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+
+  name        String
+  mode        String   // hyrox|athx|crossfit|maintenance
+  goalId      String?
+  phase       String   @default("base") // base|strength|aerobic|specific|competition|taper|recovery|maintenance
+  startWeek   DateTime
+  endWeek     DateTime
+  weeks       Int      @default(4)
+  status      String   @default("active") // active|archived|completed
+  source      String   @default("engine") // engine|coach|manual
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  blocks      TrainingBlock[]
+  workouts    ScheduledWorkout[]
+
+  @@index([athleteId, status])
+}
+
+model TrainingBlock {
+  id          String   @id @default(cuid())
+  planId      String
+  plan        TrainingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  name        String
+  focus       String
+  weekIndex   Int
+  startDate   DateTime
+  endDate     DateTime
+  notes       String?
+  createdAt   DateTime @default(now())
+}
+
+model ScheduledWorkout {
+  id          String   @id @default(cuid())
+  planId      String
+  plan        TrainingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  dayOfWeek   Int      // 0=Sun ... 6=Sat
+  scheduledDate DateTime
+  title       String
+  mode        String
+  type        String   // strength|run|interval|conditioning|emom|amrap|for_time|tabata|mobility|recovery|race_sim
+  durationMin Int?
+  intensity   String?  // easy|moderate|hard|very_hard|test
+  notes       String?
+  workoutId   String?
+  createdAt   DateTime @default(now())
+
+  @@index([planId, scheduledDate])
+}
+
+// ---------------------------------------------------------------------------
+// Workouts, exercises, logs
+// ---------------------------------------------------------------------------
+
+model Workout {
+  id          String   @id @default(cuid())
+  slug        String?  @unique
+  name        String
+  mode        String
+  type        String
+  description String?
+  warmup      String?
+  cooldown    String?
+  scoring     String?  // "for_time" | "amrap_20" | "emom_12" | "tabata" | "load" | "rounds"
+  capMinutes  Int?
+  notes       String?
+  source      String   @default("library") // library|custom|coach|engine|seed
+  createdAt   DateTime @default(now())
+
+  exercises   WorkoutExercise[]
+  logs        WorkoutLog[]
+}
+
+model ExerciseLibrary {
+  id          String   @id @default(cuid())
+  name        String
+  category    String   // barbell|kettlebell|dumbbell|bodyweight|run|erg|sled|carry|conditioning|mobility
+  unit        String   @default("reps") // reps|meters|seconds|calories|kg
+  description String?
+  tips        String?
+  substitutes String?  // CSV of ids/names
+  createdAt   DateTime @default(now())
+}
+
+model WorkoutExercise {
+  id          String   @id @default(cuid())
+  workoutId   String
+  workout     Workout @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+  name        String
+  orderIndex  Int
+  sets        Int?
+  reps        String?
+  duration    Int?     // seconds
+  distance    Int?     // meters
+  loadKg      Float?
+  restSeconds Int?
+  notes       String?
+  rx         String?   // RX definition for the movement
+
+  @@index([workoutId, orderIndex])
+}
+
+model WorkoutLog {
+  id           String   @id @default(cuid())
+  athleteId    String
+  athlete      AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  workoutId    String?
+  workout      Workout? @relation(fields: [workoutId], references: [id])
+
+  scheduledDate DateTime
+  completedAt  DateTime?
+  mode         String
+  type         String
+  title        String
+  notes        String?
+  rpe          Int?        // 1-10
+  durationSec  Int?
+  result       String?     // "12:34" | "187 reps" | "5 rounds + 12"
+  rxScaled    String?     // rx|scaled|modified
+  feeling      String?
+  completed    Boolean  @default(false)
+  source       String   @default("manual") // manual|engine|coach|scheduled
+
+  exerciseLogs ExerciseLog[]
+  createdAt    DateTime @default(now())
+
+  @@index([athleteId, scheduledDate])
+}
+
+model ExerciseLog {
+  id           String   @id @default(cuid())
+  workoutLogId String
+  workoutLog   WorkoutLog @relation(fields: [workoutLogId], references: [id], onDelete: Cascade)
+  name         String
+  sets         Int?
+  reps         String?
+  weightKg     Float?
+  durationSec  Int?
+  distanceM    Int?
+  notes        String?
+  orderIndex   Int      @default(0)
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks, PRs, race results
+// ---------------------------------------------------------------------------
+
+model Benchmark {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  mode        String   // hyrox|athx|crossfit|general
+  category    String   // strength|run|erg|conditioning|wod|metcon
+  unit        String   @default("seconds") // seconds|kg|meters|reps
+  description String?
+  higherIsBetter Boolean @default(true)
+
+  results     BenchmarkResult[]
+}
+
+model BenchmarkResult {
+  id           String   @id @default(cuid())
+  athleteId    String
+  athlete      AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  benchmarkId  String
+  benchmark    Benchmark @relation(fields: [benchmarkId], references: [id])
+  value        Float
+  unit         String
+  recordedAt   DateTime @default(now())
+  notes        String?
+
+  @@index([athleteId, benchmarkId])
+}
+
+model PersonalRecord {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  movement    String
+  value       Float
+  unit        String // kg|seconds|meters|reps
+  context     String? // "1RM" | "5km" | "10km"
+  recordedAt  DateTime @default(now())
+
+  @@index([athleteId, movement])
+}
+
+model RaceResult {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  competition String
+  format      String   // hyrox|athx
+  division    String?
+  finishSec   Int
+  rankOverall Int?
+  rankDivision Int?
+  location    String?
+  date        DateTime
+  notes       String?
+
+  splits      RaceSplit[]
+
+  @@index([athleteId, date])
+}
+
+model RaceSplit {
+  id          String   @id @default(cuid())
+  raceResultId String?
+  raceResult  RaceResult? @relation(fields: [raceResultId], references: [id], onDelete: SetNull)
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  segment     Int      // 1..8 for HYROX
+  type        String   // run|station
+  stationName String?
+  durationSec Int
+  transitionSec Int?
+  recordedAt  DateTime @default(now())
+
+  @@index([athleteId, segment])
+}
+
+// ---------------------------------------------------------------------------
+// Metrics, recovery, wearables
+// ---------------------------------------------------------------------------
+
+model AthleteMetric {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  date        DateTime
+  weightKg    Float?
+  restingHr    Int?
+  sleepHours  Float?
+  hrv         Int?
+  fatigue     Int?    // 1-10
+  readiness    Int?    // 0-100
+  notes       String?
+
+  @@index([athleteId, date])
+}
+
+model RecoveryLog {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  date        DateTime
+  sleepHours  Float?
+  muscleSoreness Int? // 0-10
+  stress      Int?    // 0-10
+  notes       String?
+  createdAt   DateTime @default(now())
+}
+
+model WearableConnection {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  provider    String   // apple_health|health_connect|garmin|strava|whoop
+  connectedAt DateTime @default(now())
+  status      String   @default("active")
+  lastSync    DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Partnerships (ATHX pairs), coaching, gyms
+// ---------------------------------------------------------------------------
+
+model Partnership {
+  id          String   @id @default(cuid())
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  partnerName String
+  partnerEmail String?
+  status      String   @default("pending") // pending|active|inactive
+  sharedPlanId String?
+  createdAt   DateTime @default(now())
+}
+
+model CoachProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName String
+  bio         String?
+  specialties String?
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  athletes    CoachAthlete[]
+}
+
+model CoachAthlete {
+  id          String   @id @default(cuid())
+  coachId     String
+  coach       CoachProfile @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  athleteId   String
+  athlete     AthleteProfile @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  status      String   @default("active") // active|pending|ended
+  createdAt   DateTime @default(now())
+
+  @@unique([coachId, athleteId])
+}
+
+// ---------------------------------------------------------------------------
+// Community: challenges, activity, notifications
+// ---------------------------------------------------------------------------
+
+model Challenge {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  mode        String?
+  metric      String   // "run_distance" | "workouts" | "pr_count" | "station_time"
+  goal        Float
+  unit        String
+  startWeek   DateTime @default(now())
+  weeks       Int      @default(4)
+  createdAt   DateTime @default(now())
+
+  participants ChallengeParticipant[]
+}
+
+model ChallengeParticipant {
+  id          String   @id @default(cuid())
+  challengeId String
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  athleteId   String?
+  athlete     AthleteProfile? @relation(fields: [athleteId], references: [id])
+  progress    Float    @default(0)
+  completedAt DateTime?
+  joinedAt    DateTime @default(now())
+
+  @@unique([challengeId, userId])
+}
+
+model ActivityFeedItem {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String   // workout|pr|competition|benchmark|challenge
+  title       String
+  body        String?
+  visibility  String   @default("friends") // public|friends|private
+  metadata    String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String
+  title       String
+  body        String?
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([userId, read])
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions, entitlements, AI
+// ---------------------------------------------------------------------------
+
+model Subscription {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier        String   @default("free") // free|pro|pro_annual|coach|gym
+  status      String   @default("active") // active|cancelled|past_due|trialing
+  provider    String?  // stripe|app_store|play_store
+  providerRef String?
+  currentPeriodEnd DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AiMessage {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        String   // user|assistant|system
+  content     String
+  toolsUsed   String?  // CSV
+  recommendationId String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model AiRecommendation {
+  id          String   @id @default(cuid())
+  athleteId   String?
+  type        String   // weakness|adjustment|weekly_summary|readiness|plan_change
+  title       String
+  body        String
+  severity    String   @default("info") // info|warning|critical|positive
+  evidence    String?  // JSON
+  appliedAt   DateTime?
+  createdAt   DateTime @default(now())
+}

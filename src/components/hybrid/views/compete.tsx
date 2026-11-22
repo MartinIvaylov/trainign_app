@@ -1,0 +1,450 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { useApp } from "@/store/app-store";
+import { Card, PageHeader, Pill, SectionTitle, StatCard, EmptyState, MiniBar } from "@/components/hybrid/blocks/ui";
+import { MODE_META, TrainingMode } from "@/types";
+import {
+  HYROX_STATIONS, HYROX_DIVISIONS, simulateHyrox, formatHMS, formatPace, HYROX_TIME_TARGETS,
+} from "@/lib/competition-rules/hyrox";
+import { estimateAthxScore, normaliseAthxTest, ATHX_DISCIPLINES, pairCombinedScore } from "@/lib/competition-rules/athx";
+import { motion } from "framer-motion";
+import { Trophy, Plus, MapPin, Calendar, ChevronRight, Save, Activity, Users, Brain } from "lucide-react";
+
+const UPCOMING_EVENTS = [
+  { format: "hyrox" as TrainingMode, name: "HYROX London", city: "London", country: "UK", date: "2027-03-14" },
+  { format: "hyrox" as TrainingMode, name: "HYROX Munich", city: "Munich", country: "DE", date: "2027-04-04" },
+  { format: "hyrox" as TrainingMode, name: "HYROX Stockholm", city: "Stockholm", country: "SE", date: "2027-04-25" },
+  { format: "athx" as TrainingMode, name: "ATHX Games — Qualifier", city: "Online", country: "—", date: "2027-02-20" },
+  { format: "athx" as TrainingMode, name: "ATHX Games — Finals", city: "Dubai", country: "AE", date: "2027-05-10" },
+  { format: "crossfit" as TrainingMode, name: "CrossFit Open — WOD 25.1", city: "Worldwide", country: "—", date: "2027-02-27" },
+];
+
+export function CompeteView() {
+  const [tab, setTab] = useState<"hub" | "hyrox" | "athx" | "pairs">("hub");
+  const upcoming = useApp((s) => s.upcomingCompetition);
+  const pushToast = useApp((s) => s.pushToast);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Compete"
+        subtitle="HYROX, ATHX and CrossFit events, simulations and results."
+        actions={
+          <div className="flex items-center gap-1.5">
+            <Pill active={tab === "hub"} onClick={() => setTab("hub")}>Hub</Pill>
+            <Pill active={tab === "hyrox"} color="var(--hyrox)" onClick={() => setTab("hyrox")}>HYROX</Pill>
+            <Pill active={tab === "athx"} color="var(--athx)" onClick={() => setTab("athx")}>ATHX</Pill>
+            <Pill active={tab === "pairs"} color="var(--athx)" onClick={() => setTab("pairs")}>Pairs</Pill>
+          </div>
+        }
+      />
+
+      {upcoming && tab === "hub" && (
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-lg border border-border p-6 relative overflow-hidden"
+          style={{ background: `linear-gradient(135deg, color-mix(in oklch, ${MODE_META[upcoming.format].color} 18%, var(--card)), var(--card))` }}
+        >
+          <div className="absolute inset-0 grid-bg opacity-20 pointer-events-none" />
+          <div className="relative flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground flex items-center gap-2">
+                <Trophy className="w-3.5 h-3.5" /> Your next competition
+              </div>
+              <div className="mt-2 text-2xl font-bold tracking-tight">{upcoming.name}</div>
+              <div className="text-sm text-muted-foreground mt-1">
+                {new Date(upcoming.date).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+                {upcoming.division && ` · ${upcoming.division}`}
+              </div>
+            </div>
+            <div className="text-center">
+              <div className="text-stat text-5xl" style={{ color: MODE_META[upcoming.format].color }}>
+                {Math.max(0, Math.ceil((new Date(upcoming.date).getTime() - Date.now()) / (86400 * 1000)))}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1 uppercase tracking-widest">days to go</div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {tab === "hub" && (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard label="Events on calendar" value={UPCOMING_EVENTS.length} accent="var(--primary)" />
+            <StatCard label="Your competitions" value={1} delta={upcoming?.name ?? "—"} accent="var(--hyrox)" />
+            <StatCard label="Hyrox simulations saved" value={useApp.getState().hyroxSimulations.length} accent="var(--athx)" />
+            <StatCard label="Race results logged" value={0} accent="var(--maint)" />
+          </div>
+
+          <Card>
+            <SectionTitle hint={`${UPCOMING_EVENTS.length} upcoming`}>Competition calendar</SectionTitle>
+            <div className="space-y-2">
+              {UPCOMING_EVENTS.map((e, i) => (
+                <div key={i} className="flex items-center justify-between p-3 rounded-md border border-border hover:bg-secondary/30 transition">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-1.5 h-12 rounded-full" style={{ background: MODE_META[e.format].color }} />
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{e.name}</div>
+                      <div className="text-xs text-muted-foreground flex items-center gap-3 mt-0.5">
+                        <span className="flex items-center gap-1"><MapPin className="w-3 h-3" /> {e.city}, {e.country}</span>
+                        <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(e.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => pushToast({ kind: "success", title: "Registered", body: `${e.name} added to your competitions.` })}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs font-medium hover:bg-secondary transition"
+                  >
+                    Register <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 text-xs text-muted-foreground">
+              Events shown are illustrative. Add your own competition from your profile or through manual entry — HYBRID does not scrape official event sites.
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle hint="Manual entry">Log a past result</SectionTitle>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <select className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none">
+                <option>HYROX</option>
+                <option>ATHX</option>
+                <option>CrossFit</option>
+              </select>
+              <input placeholder="Finish time / score" className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none" />
+              <button
+                onClick={() => pushToast({ kind: "success", title: "Result logged" })}
+                className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition"
+              >
+                Save result
+              </button>
+            </div>
+          </Card>
+        </>
+      )}
+
+      {tab === "hyrox" && <HyroxSimulator />}
+      {tab === "athx" && <AthxScoreboard />}
+      {tab === "pairs" && <AthxPairs />}
+    </div>
+  );
+}
+
+function HyroxSimulator() {
+  const [runSplits, setRunSplits] = useState<number[]>(Array(8).fill(360));
+  const [stationSplits, setStationSplits] = useState<number[]>(Array(8).fill(180));
+  const [transitions, setTransitions] = useState<number>(180);
+  const saveHyrox = useApp((s) => s.saveHyroxSimulation);
+  const pushToast = useApp((s) => s.pushToast);
+
+  const result = useMemo(() => simulateHyrox({ runSplits, stationSplits, transitionsSec: transitions }), [runSplits, stationSplits, transitions]);
+
+  function update(arr: number[], i: number, v: number) {
+    const next = [...arr];
+    next[i] = v;
+    if (arr === runSplits) setRunSplits(next); else setStationSplits(next);
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <SectionTitle hint="Enter expected or completed splits">HYROX race simulation</SectionTitle>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+          <StatCard label="Predicted finish" value={result.finishFormatted} accent="var(--hyrox)" />
+          <StatCard label="Avg pace" value={formatPace(result.averageRunPaceSecPerKm)} accent="var(--primary)" />
+          <StatCard label="Strongest block" value={HYROX_STATIONS[result.strongest.index - 1].name} delta={`${formatHMS(result.strongest.sec)}`} accent="var(--success)" />
+          <StatCard label="Weakest block" value={HYROX_STATIONS[result.weakest.index - 1].name} delta={`${formatHMS(result.weakest.sec)}`} accent="var(--destructive)" />
+        </div>
+
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full text-sm min-w-[640px]">
+            <thead>
+              <tr className="text-xs text-muted-foreground text-left border-b border-border">
+                <th className="py-2 pr-3">Station</th>
+                <th className="py-2 pr-3">Standard (Open)</th>
+                <th className="py-2 pr-3">Run split (mm:ss)</th>
+                <th className="py-2 pr-3">Station (mm:ss)</th>
+                <th className="py-2 pr-3">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {HYROX_STATIONS.map((s, i) => {
+                const total = runSplits[i] + stationSplits[i];
+                return (
+                  <tr key={s.index} className="border-b border-border last:border-0">
+                    <td className="py-2 pr-3 font-medium">{i + 1}. {s.name}</td>
+                    <td className="py-2 pr-3 text-xs text-muted-foreground">{s.standards.open?.load ?? s.standards.open?.distance ?? s.standards.open?.reps}</td>
+                    <td className="py-2 pr-3">
+                      <TimeInput value={runSplits[i]} onChange={(v) => update(runSplits, i, v)} />
+                    </td>
+                    <td className="py-2 pr-3">
+                      <TimeInput value={stationSplits[i]} onChange={(v) => update(stationSplits, i, v)} />
+                    </td>
+                    <td className="py-2 pr-3 tabular-nums font-semibold">{formatHMS(total)}</td>
+                  </tr>
+                );
+              })}
+              <tr className="border-b border-border">
+                <td colSpan={2} className="py-2 font-medium">Transitions (total)</td>
+                <td colSpan={2} className="py-2 pr-3">
+                  <TimeInput value={transitions} onChange={setTransitions} />
+                </td>
+                <td className="py-2 pr-3 tabular-nums">{formatHMS(transitions)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex flex-wrap gap-1.5">
+            {HYROX_TIME_TARGETS.map((t) => (
+              <div key={t.label} className={`text-xs px-2.5 py-1 rounded-md border ${
+                result.totalSec <= t.sec ? "border-primary bg-primary/10 font-semibold" : "border-border"
+              }`}>
+                <span className="font-semibold">{t.label}</span> {t.description}
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => {
+              saveHyrox({
+                runSplits, stationSplits, transitionsSec: transitions,
+                totalSec: result.totalSec, finishFormatted: result.finishFormatted,
+              });
+              pushToast({ kind: "success", title: "Simulation saved", body: `Predicted finish: ${result.finishFormatted}` });
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 transition"
+          >
+            <Save className="w-3.5 h-3.5" /> Save simulation
+          </button>
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle>Per-station contribution</SectionTitle>
+        <div className="space-y-2">
+          {HYROX_STATIONS.map((s, i) => {
+            const total = runSplits[i] + stationSplits[i];
+            const max = Math.max(...HYROX_STATIONS.map((_, j) => runSplits[j] + stationSplits[j]));
+            return (
+              <div key={s.index} className="flex items-center gap-3">
+                <div className="w-32 text-xs font-medium truncate">{i + 1}. {s.name}</div>
+                <div className="flex-1">
+                  <MiniBar value={total} max={max} color={i + 1 === result.weakest.index ? "var(--destructive)" : i + 1 === result.strongest.index ? "var(--success)" : "var(--primary)"} height={8} />
+                </div>
+                <div className="w-16 text-right text-xs tabular-nums font-medium">{formatHMS(total)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function TimeInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const mm = Math.floor(value / 60);
+  const ss = value % 60;
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        min={0}
+        value={mm}
+        onChange={(e) => onChange((+e.target.value || 0) * 60 + ss)}
+        className="w-12 px-1.5 py-1 rounded border border-border bg-secondary/30 text-sm tabular-nums outline-none"
+      />
+      <span className="text-xs text-muted-foreground">:</span>
+      <input
+        type="number"
+        min={0}
+        max={59}
+        value={ss}
+        onChange={(e) => onChange(mm * 60 + (+e.target.value || 0))}
+        className="w-12 px-1.5 py-1 rounded border border-border bg-secondary/30 text-sm tabular-nums outline-none"
+      />
+    </div>
+  );
+}
+
+function AthxScoreboard() {
+  const benchmarks = useApp((s) => s.benchmarks);
+  const score = useMemo(() => {
+    if (!benchmarks) return null;
+    const squat = normaliseAthxTest(ATHX_DISCIPLINES[0].categories[0], benchmarks.backSquatKg ?? 60);
+    const dl = normaliseAthxTest(ATHX_DISCIPLINES[0].categories[1], benchmarks.deadliftKg ?? 80);
+    const press = normaliseAthxTest(ATHX_DISCIPLINES[0].categories[2], benchmarks.strictPressKg ?? 30);
+    const strength = Math.round((squat + dl + press) / 3);
+    const run = normaliseAthxTest(ATHX_DISCIPLINES[1].categories[0], benchmarks.fiveKmSec ?? 1500);
+    const row = normaliseAthxTest(ATHX_DISCIPLINES[1].categories[1], benchmarks.row2kSec ?? 450);
+    const skierg = normaliseAthxTest(ATHX_DISCIPLINES[1].categories[2], benchmarks.skierg1kSec ?? 200);
+    const endurance = Math.round((run + row + skierg) / 3);
+    const metcon = normaliseAthxTest(ATHX_DISCIPLINES[2].categories[0], 150);
+    return { strength, endurance, metcon, total: estimateAthxScore({ strengthScore: strength, enduranceScore: endurance, metconScore: metcon }) };
+  }, [benchmarks]);
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <SectionTitle hint="HYBRID estimate — not official FitScore">Estimated performance score</SectionTitle>
+        {score ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <ScoreBox label="Strength" value={score.strength} color="var(--athx)" />
+            <ScoreBox label="Endurance" value={score.endurance} color="var(--athx)" />
+            <ScoreBox label="MetCon-X" value={score.metcon} color="var(--athx)" />
+            <ScoreBox label="Total EPS" value={score.total} color="var(--primary)" big />
+          </div>
+        ) : (
+          <EmptyState title="No benchmarks recorded" body="Add benchmarks in your profile to estimate your performance score." />
+        )}
+        <div className="mt-4 text-xs text-muted-foreground">
+          HYBRID computes an Estimated Performance Score (EPS) from your benchmark inputs. This is distinct from the official ATHX FitScore. If you have an official FitScore, enter it in your profile and we will display that instead.
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle hint="Three scored disciplines">ATHX disciplines</SectionTitle>
+        <div className="space-y-4">
+          {ATHX_DISCIPLINES.map((d) => (
+            <div key={d.slug} className="p-3 rounded-md border border-border">
+              <div className="font-semibold text-sm flex items-center gap-2">
+                <span className="w-1.5 h-4 rounded-full" style={{ background: "var(--athx)" }} />
+                {d.name}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">{d.description}</div>
+              <div className="mt-3 space-y-1.5">
+                {d.categories.map((c) => (
+                  <div key={c.slug} className="flex items-center justify-between text-xs">
+                    <span className="font-medium">{c.name}</span>
+                    <span className={`px-1.5 py-0.5 rounded ${c.verified ? "bg-success/15 text-success" : "bg-warning/15 text-warning"}`}>
+                      {c.verified ? "verified" : "estimate"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function AthxPairs() {
+  const [athleteScore, setAthleteScore] = useState(68);
+  const [partnerScore, setPartnerScore] = useState(72);
+  const [partnerName, setPartnerName] = useState("");
+  const [partnerEmail, setPartnerEmail] = useState("");
+  const [status, setStatus] = useState<"idle" | "invited">("idle");
+  const pushToast = useApp((s) => s.pushToast);
+
+  const combined = pairCombinedScore({ athleteScore, partnerScore });
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <SectionTitle hint="Individual + pairs">ATHX pairs mode</SectionTitle>
+        <div className="text-sm text-muted-foreground mb-4">
+          Train with a partner. Share a plan, coordinate sessions, compare benchmark improvements and track pair-specific preparation.
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div className="p-4 rounded-md border border-border">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-widest">You</div>
+            <div className="mt-2 flex items-end gap-2">
+              <div className="text-stat text-3xl">{athleteScore}</div>
+              <div className="text-xs text-muted-foreground mb-1">EPS</div>
+            </div>
+            <input
+              type="range" min={0} max={100} value={athleteScore}
+              onChange={(e) => setAthleteScore(+e.target.value)}
+              className="w-full mt-3"
+            />
+          </div>
+          <div className="p-4 rounded-md border border-border">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-widest">Partner</div>
+            <div className="mt-2 flex items-end gap-2">
+              <div className="text-stat text-3xl">{partnerScore}</div>
+              <div className="text-xs text-muted-foreground mb-1">EPS</div>
+            </div>
+            <input
+              type="range" min={0} max={100} value={partnerScore}
+              onChange={(e) => setPartnerScore(+e.target.value)}
+              className="w-full mt-3"
+            />
+          </div>
+        </div>
+
+        <div className="mt-4 p-4 rounded-md bg-secondary/30">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-widest">Combined pair score</div>
+          <div className="mt-1 text-stat text-4xl" style={{ color: "var(--athx)" }}>{combined}</div>
+          <div className="text-xs text-muted-foreground mt-1">Average of both individual estimated scores.</div>
+        </div>
+
+        <div className="mt-4 grid sm:grid-cols-2 gap-3">
+          <input
+            value={partnerName}
+            onChange={(e) => setPartnerName(e.target.value)}
+            placeholder="Partner name"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+          <input
+            value={partnerEmail}
+            onChange={(e) => setPartnerEmail(e.target.value)}
+            placeholder="Partner email"
+            className="px-3 py-2 rounded-md border border-border bg-secondary/30 text-sm outline-none"
+          />
+        </div>
+
+        {status === "idle" ? (
+          <button
+            onClick={() => {
+              if (!partnerName) {
+                pushToast({ kind: "warning", title: "Add a partner name" });
+                return;
+              }
+              setStatus("invited");
+              pushToast({ kind: "success", title: "Partnership created", body: `${partnerName} has been invited.` });
+            }}
+            className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition"
+          >
+            <Plus className="w-4 h-4" /> Create partnership
+          </button>
+        ) : (
+          <div className="mt-4 p-3 rounded-md border border-success/40 bg-success/10 text-sm text-success">
+            Partnership with <span className="font-semibold">{partnerName || "your partner"}</span> created. Status: pending partner acceptance.
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle>Pair sessions this week</SectionTitle>
+        <div className="space-y-2">
+          {["MetCon-X Test A simulation", "Strength — Squat & Press", "Endurance — 5 km + 2 km row"].map((s, i) => (
+            <div key={i} className="flex items-center justify-between p-3 rounded-md border border-border">
+              <div className="flex items-center gap-3">
+                <Users className="w-4 h-4 text-athx" style={{ color: "var(--athx)" }} />
+                <div className="text-sm font-medium">{s}</div>
+              </div>
+              <div className="text-xs text-muted-foreground">Synced with partner</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function ScoreBox({ label, value, color, big }: { label: string; value: number; color: string; big?: boolean }) {
+  return (
+    <div className={`p-4 rounded-md border border-border text-center ${big ? "bg-primary/10" : ""}`}>
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-widest">{label}</div>
+      <div className="mt-2 text-stat" style={{ fontSize: big ? "3rem" : "2rem", color }}>{value}</div>
+      <div className="text-xs text-muted-foreground mt-1">/100</div>
+    </div>
+  );
+}
