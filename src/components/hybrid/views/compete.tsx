@@ -9,7 +9,7 @@ import {
 } from "@/lib/competition-rules/hyrox";
 import { estimateAthxScore, normaliseAthxTest, ATHX_DISCIPLINES, pairCombinedScore } from "@/lib/competition-rules/athx";
 import { motion } from "framer-motion";
-import { Trophy, Plus, MapPin, Calendar, ChevronRight, Save, Activity, Users, Brain } from "lucide-react";
+import { Trophy, Plus, MapPin, Calendar, ChevronRight, Save, Activity, Users, Brain, Target, TrendingUp, TrendingDown, Trash2 } from "lucide-react";
 
 const UPCOMING_EVENTS = [
   { format: "hyrox" as TrainingMode, name: "HYROX London", city: "London", country: "UK", date: "2027-03-14" },
@@ -21,7 +21,7 @@ const UPCOMING_EVENTS = [
 ];
 
 export function CompeteView() {
-  const [tab, setTab] = useState<"hub" | "hyrox" | "athx" | "pairs">("hub");
+  const [tab, setTab] = useState<"hub" | "hyrox" | "athx" | "pairs" | "results">("hub");
   const upcoming = useApp((s) => s.upcomingCompetition);
   const pushToast = useApp((s) => s.pushToast);
 
@@ -36,6 +36,7 @@ export function CompeteView() {
             <Pill active={tab === "hyrox"} color="var(--hyrox)" onClick={() => setTab("hyrox")}>HYROX</Pill>
             <Pill active={tab === "athx"} color="var(--athx)" onClick={() => setTab("athx")}>ATHX</Pill>
             <Pill active={tab === "pairs"} color="var(--athx)" onClick={() => setTab("pairs")}>Pairs</Pill>
+            <Pill active={tab === "results"} color="var(--success)" onClick={() => setTab("results")}>Results</Pill>
           </div>
         }
       />
@@ -130,6 +131,7 @@ export function CompeteView() {
       {tab === "hyrox" && <HyroxSimulator />}
       {tab === "athx" && <AthxScoreboard />}
       {tab === "pairs" && <AthxPairs />}
+      {tab === "results" && <ResultsPanel />}
     </div>
   );
 }

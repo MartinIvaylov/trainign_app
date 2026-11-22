@@ -420,8 +420,18 @@ export function LandingPage() {
             <div className="space-y-1.5">
               <div>About</div>
               <div>Pricing</div>
-              <div>Privacy</div>
-              <div>Terms</div>
+              <button
+                onClick={() => setView("privacy")}
+                className="hover:text-foreground transition text-left"
+              >
+                Privacy
+              </button>
+              <button
+                onClick={() => setView("terms")}
+                className="hover:text-foreground transition text-left"
+              >
+                Terms
+              </button>
             </div>
           </div>
           <div>

@@ -20,7 +20,9 @@ type View =
   | "auth"
   | "onboarding"
   | "app"
-  | "pricing";
+  | "pricing"
+  | "privacy"
+  | "terms";
 
 type AppView =
   | "dashboard"
@@ -32,12 +34,13 @@ type AppView =
   | "coach"
   | "community"
   | "profile"
-  | "settings";
+  | "settings"
+  | "coach_dashboard";
 
 interface CompetitionLite {
   format: TrainingMode;
   name: string;
-  date: string; // ISO
+  date: string;
   division?: string;
   location?: string;
 }
@@ -56,6 +59,56 @@ interface HyroxSimulation {
   totalSec: number;
   finishFormatted: string;
   savedAt: string;
+}
+
+export interface RaceResultEntry {
+  id: string;
+  format: TrainingMode;
+  competitionName: string;
+  date: string;
+  finishSec: number;
+  targetSec?: number;
+  division?: string;
+  notes?: string;
+  splits?: { name: string; sec: number }[];
+  recordedAt: string;
+}
+
+export interface CoachAthlete {
+  id: string;
+  name: string;
+  email: string;
+  activeMode: TrainingMode;
+  daysPerWeek: number;
+  lastSessionDate?: string;
+  recentRPE?: number;
+  notes?: string;
+  status: "active" | "pending" | "ended";
+  addedAt: string;
+}
+
+export interface CoachWorkout {
+  id: string;
+  title: string;
+  mode: TrainingMode;
+  type: string;
+  description: string;
+  movements: { name: string; reps: string; note?: string }[];
+  capMinutes?: number;
+  assignedTo: string[]; // athlete ids
+  assignedAt: string;
+  allowAdaptation: boolean;
+  notes?: string;
+}
+
+export interface AthleteCheckin {
+  id: string;
+  athleteId: string;
+  date: string;
+  rpe?: number;
+  fatigue?: number;
+  sleep?: number;
+  notes?: string;
 }
 
 interface AppState {
@@ -101,6 +154,24 @@ interface AppState {
   // --- simulations
   hyroxSimulations: HyroxSimulation[];
   saveHyroxSimulation: (s: Omit<HyroxSimulation, "savedAt">) => void;
+
+  // --- race results
+  raceResults: RaceResultEntry[];
+  addRaceResult: (r: Omit<RaceResultEntry, "id" | "recordedAt">) => void;
+  deleteRaceResult: (id: string) => void;
+
+  // --- coach dashboard
+  coachAthletes: CoachAthlete[];
+  addCoachAthlete: (a: Omit<CoachAthlete, "id" | "addedAt">) => void;
+  updateCoachAthlete: (id: string, patch: Partial<CoachAthlete>) => void;
+  removeCoachAthlete: (id: string) => void;
+
+  coachWorkouts: CoachWorkout[];
+  addCoachWorkout: (w: Omit<CoachWorkout, "id" | "assignedAt">) => void;
+  deleteCoachWorkout: (id: string) => void;
+
+  checkins: AthleteCheckin[];
+  addCheckin: (c: Omit<AthleteCheckin, "id">) => void;
 
   // --- toasts
   toasts: ToastMessage[];
@@ -221,6 +292,41 @@ export const useApp = create<AppState>()(
           hyroxSimulations: [{ ...s, savedAt: new Date().toISOString() }, ...state.hyroxSimulations].slice(0, 20),
         })),
 
+      raceResults: [],
+      addRaceResult: (r) =>
+        set((state) => ({
+          raceResults: [
+            { ...r, id: uuid(), recordedAt: new Date().toISOString() },
+            ...state.raceResults,
+          ].slice(0, 50),
+        })),
+      deleteRaceResult: (id) =>
+        set((state) => ({ raceResults: state.raceResults.filter((r) => r.id !== id) })),
+
+      coachAthletes: [],
+      addCoachAthlete: (a) =>
+        set((state) => ({
+          coachAthletes: [...state.coachAthletes, { ...a, id: uuid(), addedAt: new Date().toISOString() }],
+        })),
+      updateCoachAthlete: (id, patch) =>
+        set((state) => ({
+          coachAthletes: state.coachAthletes.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+        })),
+      removeCoachAthlete: (id) =>
+        set((state) => ({ coachAthletes: state.coachAthletes.filter((a) => a.id !== id) })),
+
+      coachWorkouts: [],
+      addCoachWorkout: (w) =>
+        set((state) => ({
+          coachWorkouts: [...state.coachWorkouts, { ...w, id: uuid(), assignedAt: new Date().toISOString() }],
+        })),
+      deleteCoachWorkout: (id) =>
+        set((state) => ({ coachWorkouts: state.coachWorkouts.filter((w) => w.id !== id) })),
+
+      checkins: [],
+      addCheckin: (c) =>
+        set((state) => ({ checkins: [{ ...c, id: uuid() }, ...state.checkins].slice(0, 200) })),
+
       toasts: [],
       pushToast: (t) => {
         const id = uuid();
@@ -255,12 +361,16 @@ export const useApp = create<AppState>()(
           logs: [],
           prs: [],
           hyroxSimulations: [],
+          raceResults: [],
+          coachAthletes: [],
+          coachWorkouts: [],
+          checkins: [],
           tier: "free",
           view: "landing",
         }),
     }),
     {
-      name: "hybrid-store",
+      name: "hybrid-store-v2",
       storage: createJSONStorage(() => (typeof window !== "undefined" ? localStorage : (undefined as unknown as Storage))),
       partialize: (s) => ({
         authed: s.authed,
@@ -276,6 +386,10 @@ export const useApp = create<AppState>()(
         logs: s.logs,
         prs: s.prs,
         hyroxSimulations: s.hyroxSimulations,
+        raceResults: s.raceResults,
+        coachAthletes: s.coachAthletes,
+        coachWorkouts: s.coachWorkouts,
+        checkins: s.checkins,
         tier: s.tier,
       }),
     },

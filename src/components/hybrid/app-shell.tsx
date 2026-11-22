@@ -4,7 +4,7 @@ import { useApp } from "@/store/app-store";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutDashboard, CalendarDays, Dumbbell, Trophy, BarChart3,
-  Brain, Users, Settings, LogOut, ChevronRight, Bell,
+  Brain, Users, Settings, LogOut, ChevronRight, Bell, ClipboardList,
 } from "lucide-react";
 import { DashboardView } from "@/components/hybrid/views/dashboard";
 import { PlanView } from "@/components/hybrid/views/plan";
@@ -16,6 +16,7 @@ import { CoachView } from "@/components/hybrid/views/coach";
 import { CommunityView } from "@/components/hybrid/views/community";
 import { ProfileView } from "@/components/hybrid/views/profile";
 import { SettingsView } from "@/components/hybrid/views/settings";
+import { CoachDashboardView } from "@/components/hybrid/views/coach-dashboard";
 import { MODE_META } from "@/types";
 
 const NAV = [
@@ -27,6 +28,12 @@ const NAV = [
   { slug: "performance", label: "Performance", icon: BarChart3 },
   { slug: "coach", label: "Coach", icon: Brain },
   { slug: "community", label: "Community", icon: Users },
+] as const;
+
+const SECONDARY_NAV = [
+  { slug: "coach_dashboard", label: "Coach Dashboard", icon: ClipboardList, tierRequired: ["coach", "gym"] as const },
+  { slug: "profile", label: "Profile", icon: Users },
+  { slug: "settings", label: "Settings", icon: Settings },
 ] as const;
 
 export function AppShell() {
@@ -70,22 +77,24 @@ export function AppShell() {
             );
           })}
           <div className="my-3 border-t border-border" />
-          <button
-            onClick={() => setAppView("profile" as any)}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition ${
-              appView === "profile" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-            }`}
-          >
-            <Users className="w-4 h-4" /> Profile
-          </button>
-          <button
-            onClick={() => setAppView("settings" as any)}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition ${
-              appView === "settings" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-            }`}
-          >
-            <Settings className="w-4 h-4" /> Settings
-          </button>
+          {SECONDARY_NAV.map((item) => {
+            // Gate coach dashboard behind coach/gym tiers
+            if ("tierRequired" in item && item.tierRequired && !item.tierRequired.includes(tier as never)) return null;
+            const active = appView === item.slug;
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.slug}
+                onClick={() => setAppView(item.slug as any)}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition ${
+                  active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {item.label}
+              </button>
+            );
+          })}
         </nav>
 
         <div className="p-3 border-t border-border space-y-2">
@@ -172,6 +181,7 @@ export function AppShell() {
               {appView === "community" && <CommunityView />}
               {appView === "profile" && <ProfileView />}
               {appView === "settings" && <SettingsView />}
+              {appView === "coach_dashboard" && <CoachDashboardView />}
             </motion.div>
           </AnimatePresence>
         </main>

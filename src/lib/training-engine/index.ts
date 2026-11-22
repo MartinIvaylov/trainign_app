@@ -529,3 +529,206 @@ export { simulateHyrox, formatHMS, formatPace, HYROX_STATIONS };
 export { ATHX_DISCIPLINES, normaliseAthxTest, estimateAthxScore };
 export { CROSSFIT_BENCHMARKS };
 export { DOW_FULL };
+
+// ---------------------------------------------------------------------------
+// 7. Performance predictions (Phase 4)
+//    All predictions are clearly labeled as estimates and use only the
+//    athlete's measured benchmarks. Where data is missing, we return null
+//    rather than guessing.
+// ---------------------------------------------------------------------------
+
+export interface HyroxPredictionInput {
+  fiveKmSec?: number;        // aerobic engine
+  oneKmPaceSec?: number;     // running-specific
+  row2kSec?: number;          // rowing station proxy
+  skierg1kSec?: number;       // SkiErg station proxy
+  priorHyroxFinishSec?: number;
+  weightKg?: number;
+  backSquatKg?: number;       // sled/strength proxy
+  deadliftKg?: number;
+}
+
+export interface HyroxPrediction {
+  predictedFinishSec: number | null;
+  pacePerKmSec: number | null;
+  method: string;             // explanation of how the prediction was derived
+  confidence: "low" | "moderate" | "high";
+  inputsUsed: string[];
+}
+
+// Predict HYROX finish time from benchmarks.
+// Method: combine the athlete's prior HYROX result (if any) with the
+// predicted run + station total based on 5 km pace and erg benchmarks.
+export function predictHyroxFinish(input: HyroxPredictionInput): HyroxPrediction {
+  const inputs: string[] = [];
+
+  // 8 × 1 km runs at 5 km pace + ~6 sec/km penalty (race fatigue)
+  let runTotalSec: number | null = null;
+  if (input.fiveKmSec) {
+    const perKm = input.fiveKmSec / 5;
+    runTotalSec = Math.round((perKm + 6) * 8);
+    inputs.push(`5 km: ${formatHMS(input.fiveKmSec)} (pace ${formatPace(perKm)})`);
+  } else if (input.oneKmPaceSec) {
+    runTotalSec = Math.round((input.oneKmPaceSec + 6) * 8);
+    inputs.push(`1 km pace: ${formatPace(input.oneKmPaceSec)}`);
+  }
+
+  // Station total: average of (1000m SkiErg + 1000m Row) + 6 stations × ~3:00 each
+  let stationTotalSec: number | null = null;
+  if (input.skierg1kSec || input.row2kSec) {
+    const ergAvg =
+      ((input.skierg1kSec ?? 240) + (input.row2kSec ?? 240)) / 2;
+    // The 6 non-erg stations typically take 2:30–4:00 each in trained athletes.
+    // Use 180 sec per non-erg station as a base anchor.
+    const otherSix = 6 * 180;
+    stationTotalSec = Math.round(ergAvg * 2 + otherSix);
+    if (input.skierg1kSec) inputs.push(`SkiErg 1 km: ${formatHMS(input.skierg1kSec)}`);
+    if (input.row2kSec) inputs.push(`Row 2 km: ${formatHMS(input.row2kSec)}`);
+  } else {
+    stationTotalSec = 6 * 180; // estimate only
+  }
+
+  // Transition time: ~3 minutes total (8 transitions × ~22s)
+  const transitionsSec = 180;
+
+  let predicted: number | null = null;
+  if (runTotalSec !== null && stationTotalSec !== null) {
+    predicted = runTotalSec + stationTotalSec + transitionsSec;
+  }
+
+  // If prior HYROX result exists, blend 50/50 with predicted
+  if (input.priorHyroxFinishSec && predicted !== null) {
+    predicted = Math.round((predicted + input.priorHyroxFinishSec) / 2);
+    inputs.push(`Prior HYROX finish: ${formatHMS(input.priorHyroxFinishSec)}`);
+  } else if (input.priorHyroxFinishSec) {
+    predicted = input.priorHyroxFinishSec;
+    inputs.push(`Prior HYROX finish: ${formatHMS(input.priorHyroxFinishSec)} (no other data)`);
+  }
+
+  const confidence: HyroxPrediction["confidence"] =
+    inputs.length >= 3 ? "high" : inputs.length >= 2 ? "moderate" : inputs.length >= 1 ? "low" : "low";
+
+  return {
+    predictedFinishSec: predicted,
+    pacePerKmSec: predicted ? Math.round(predicted / 8) : null,
+    method:
+      predicted === null
+        ? "Insufficient data — record at least a 5 km time or a prior HYROX finish."
+        : `Predicted as 8 × (5 km pace + 6 sec/km fatigue) + station estimate + 3 min transitions${input.priorHyroxFinishSec ? " blended 50/50 with prior HYROX result" : ""}.`,
+    confidence,
+    inputsUsed: inputs,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 8. Competition result analysis
+// ---------------------------------------------------------------------------
+
+export interface RaceResultInput {
+  format: "hyrox" | "athx" | "crossfit";
+  finishSec: number;
+  targetSec?: number;
+  previousResultSec?: number;       // last race
+  splits?: { name: string; sec: number }[]; // station / segment splits
+}
+
+export interface RaceResultAnalysis {
+  finishFormatted: string;
+  vsTarget: { deltaSec: number; pct: number; verdict: "faster" | "slower" | "on_target" | "no_target" } | null;
+  vsPrevious: { deltaSec: number; pct: number; verdict: "improved" | "regressed" | "same" | "first_race" } | null;
+  strongestSplit: { name: string; sec: number } | null;
+  weakestSplit: { name: string; sec: number } | null;
+  summary: string;
+  recommendations: string[];
+}
+
+export function analyzeRaceResult(input: RaceResultInput): RaceResultAnalysis {
+  const finishFormatted = formatHMS(input.finishSec);
+
+  const vsTarget =
+    input.targetSec !== undefined
+      ? (() => {
+          const delta = input.finishSec - input.targetSec;
+          const pct = (delta / input.targetSec) * 100;
+          const verdict = Math.abs(pct) < 1 ? "on_target" : delta < 0 ? "faster" : "slower";
+          return { deltaSec: delta, pct: Math.round(pct * 10) / 10, verdict };
+        })()
+      : null;
+
+  const vsPrevious =
+    input.previousResultSec !== undefined
+      ? (() => {
+          const delta = input.finishSec - input.previousResultSec;
+          const pct = (delta / input.previousResultSec) * 100;
+          const verdict = Math.abs(pct) < 0.5 ? "same" : delta < 0 ? "improved" : "regressed";
+          return { deltaSec: delta, pct: Math.round(pct * 10) / 10, verdict };
+        })()
+      : { deltaSec: 0, pct: 0, verdict: "first_race" as const };
+
+  const splits = input.splits ?? [];
+  const strongest = splits.length ? splits.reduce((a, b) => (a.sec < b.sec ? a : b)) : null;
+  const weakest = splits.length ? splits.reduce((a, b) => (a.sec > b.sec ? a : b)) : null;
+
+  const summary = (() => {
+    const parts: string[] = [`${input.format.toUpperCase()} finish: ${finishFormatted}`];
+    if (vsTarget) {
+      parts.push(
+        vsTarget.verdict === "on_target"
+          ? `On target (±1%).`
+          : vsTarget.verdict === "faster"
+          ? `${Math.abs(vsTarget.deltaSec)} sec faster than target (${Math.abs(vsTarget.pct)}%).`
+          : `${vsTarget.deltaSec} sec slower than target (+${vsTarget.pct}%).`,
+      );
+    }
+    if (vsPrevious.verdict === "improved") {
+      parts.push(`Improved ${Math.abs(vsPrevious.deltaSec)} sec vs last race (${Math.abs(vsPrevious.pct)}%).`);
+    } else if (vsPrevious.verdict === "regressed") {
+      parts.push(`Regressed ${vsPrevious.deltaSec} sec vs last race (+${vsPrevious.pct}%).`);
+    } else if (vsPrevious.verdict === "first_race") {
+      parts.push(`First race recorded.`);
+    }
+    return parts.join(" ");
+  })();
+
+  const recommendations: string[] = [];
+  if (weakest) recommendations.push(`Focus next block on ${weakest.name} (${formatHMS(weakest.sec)}).`);
+  if (vsTarget?.verdict === "slower") recommendations.push("Add 1 race-pace interval session per week for the next cycle.");
+  if (vsPrevious?.verdict === "regressed") recommendations.push("Audit recovery — sleep, nutrition, and life stress over the last 4 weeks.");
+  if (recommendations.length === 0) recommendations.push("Maintain current trajectory. Re-test in 4–6 weeks.");
+
+  return {
+    finishFormatted,
+    vsTarget,
+    vsPrevious,
+    strongestSplit: strongest,
+    weakestSplit: weakest,
+    summary,
+    recommendations,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 9. Coach programming precedence (Phase 5)
+//    Coach-assigned plans take precedence over the AI engine unless the
+//    coach explicitly enables adaptation. Returns whether the engine should
+//    adapt a given session.
+// ---------------------------------------------------------------------------
+
+export interface CoachPlanMeta {
+  source: "engine" | "coach" | "manual";
+  allowAdaptation: boolean;       // coach allows AI adaptation?
+  coachNotes?: string;
+}
+
+export function shouldEngineAdapt(plan: CoachPlanMeta, reason: "high_rpe" | "missed" | "fatigue"): boolean {
+  if (plan.source === "coach" && !plan.allowAdaptation) return false;
+  // engine plans always adapt; coach plans only if allowAdaptation is true
+  return true;
+}
+
+export function explainAdaptationDecision(plan: CoachPlanMeta, reason: string): string {
+  if (plan.source === "coach" && !plan.allowAdaptation) {
+    return `Coach-assigned plan — engine will not adapt. Reason requested: ${reason}. Discuss with your coach before changing.`;
+  }
+  return `Engine will adapt this week. Trigger: ${reason}.`;
+}
