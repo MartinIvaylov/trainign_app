@@ -6,6 +6,26 @@
 
 ---
 
+## v0.5.1 Changelog (this sprint)
+
+### Testing — Auto-Adapt Unit Tests Added
+
+- **17 new unit tests** for `src/lib/training-engine/auto-adapt.ts` in `src/lib/training-engine/__tests__/auto-adapt.test.ts`:
+  - `computeAutoAdaptation` (10 tests): preserve when on plan, high RPE flags reduction, replaces next hard session when recovery needed, suggests recovery day when no upcoming hard session, flags fatigue >= 8, doesn't flag moderate fatigue, handles missed sessions, only counts last-7-days misses, human-readable summary, graceful empty input handling
+  - `applySuggestion` (7 tests): replaces session with recovery (title/type/intensity/notes verified), drops intensity one zone (very_hard → hard → moderate, floor at moderate), appends auto-applied note, no-op when no affectedSessionId, no-op when ID doesn't match, only modifies target session leaving others unchanged, handles empty sessions array
+
+### Coach Dashboard — Browser-Verified
+
+- Invite flow verified end-to-end: fill name/email → send invitation → athlete appears in roster → page reload → athlete persists
+- Store persistence verified via localStorage: `coachAthletes` array contains the new athlete with correct name, email, and `pending` status
+
+### Test coverage status
+
+- **117 tests pass** (28 engine + 34 rules + 23 prediction/analysis + 17 auto-adapt + 15 API integration) across 4 files
+- **Lint passes 0 errors** via `bun run lint`
+
+---
+
 ## v0.5.0 Changelog (this sprint)
 
 ### Phase 5 — Community + Coaching (ENHANCED)

@@ -344,15 +344,34 @@ Today, the wearable tiles in `src/components/hybrid/views/settings.tsx` are plac
 
 ## 15. Testing Strategy
 
-| Layer              | Tooling                 | Coverage target (Phase 6)                  |
-|--------------------|-------------------------|---------------------------------------------|
-| Training engine    | Jest unit tests         | 100% of `src/lib/training-engine/*`         |
-| Competition rules  | Jest unit tests         | `hyrox.ts`, `athx.ts`, `crossfit.ts`        |
-| API routes         | Playwright route tests  | `/api/coach`, `/api/workout-logs`, webhooks |
-| End-to-end         | Playwright              | Landing → onboarding → train → log → coach  |
-| Mobile             | Jest + React Native Testing Library | components, store                |
+| Layer              | Tooling                          | Status          | Files                                                            |
+|--------------------|----------------------------------|-----------------|------------------------------------------------------------------|
+| Training engine    | `bun test` unit tests            | 68 tests PASS   | `src/lib/training-engine/__tests__/engine.test.ts` (28), `auto-adapt.test.ts` (17), prediction/analysis in `engine.test.ts` (23) |
+| Competition rules  | `bun test` unit tests            | 34 tests PASS   | `src/lib/competition-rules/__tests__/rules.test.ts`             |
+| API routes         | `bun test` integration tests     | 15 tests PASS   | `src/app/api/__tests__/api.test.ts` (coach, cron, stripe webhook) |
+| End-to-end         | agent-browser (manual)           | Full journey verified | See `IMPLEMENTATION_PROGRESS.md`                            |
+| Mobile             | Planned: Jest + React Native Testing Library | Not started |                                                                  |
 
-Today, no automated tests exist. Manual browser verification of the full journey is documented in `IMPLEMENTATION_PROGRESS.md`. Unit tests for the engine are the first priority for Phase 6.
+**Current test total: 117 tests pass, 0 failures** across 4 files.
+
+Run tests with:
+
+```bash
+bun test              # run all 117 tests
+bun run lint          # 0 errors
+```
+
+Test categories covered:
+- `analyzeAthlete` — weakness detection across running/strength/erg/metcon (severity, scores, evidence, recommendations)
+- `generatePeriodization` — block structure per mode (HYROX 4-block, ATHX 5-block, CrossFit 3-block, Maintenance 1-block), never-zero weeks, weakness focus
+- `generateWeekSessions` — session distribution, day-of-week matching, mode assignment
+- `evaluateAdaptation` — high RPE, fatigue, missed sessions, on-plan detection, empty inputs
+- `planModeSwitch` — history preservation, recovery recommendation, from/to modes
+- `predictHyroxFinish` — empty inputs, 5km/1km/erg/prior-HYROX predictions, confidence levels, pace per km, method string
+- `analyzeRaceResult` — finish formatting, vs-target/previous verdicts (improved/regressed/same/faster/slower/on_target), split analysis, recommendations
+- `computeAutoAdaptation` — preserve on plan, high-RPE reduction, replace-session suggestion, recovery-day suggestion, fatigue thresholds, missed-session handling, 7-day window
+- `applySuggestion` — replace_session transformation, drop_intensity one zone with floor, auto-applied notes, no-op cases, multi-session isolation
+- API integration — invalid/valid payloads, auth (401/200), signature requirement (401), secret configuration (500), event handling (200)
 
 ---
 
