@@ -221,6 +221,45 @@ interface AppState {
   resetAll: () => void;
 }
 
+// ----------------------------------------------------------------------------
+// Persisted slice — single source of truth for what survives a page reload
+// (localStorage) and what gets mirrored to the server (write-through cache,
+// see src/lib/sync.ts). Both consumers build their snapshot from this list.
+// ----------------------------------------------------------------------------
+
+export const PERSISTED_KEYS = [
+  "authed",
+  "email",
+  "onboarded",
+  "profile",
+  "preferences",
+  "benchmarks",
+  "activeMode",
+  "activeGoal",
+  "upcomingCompetition",
+  "sessions",
+  "logs",
+  "prs",
+  "hyroxSimulations",
+  "raceResults",
+  "coachAthletes",
+  "coachWorkouts",
+  "checkins",
+  "recommendations",
+  "tier",
+] as const;
+
+export type PersistedState = Pick<AppState, (typeof PERSISTED_KEYS)[number]>;
+
+/** Extract the persisted/syncable slice from the full store state. */
+export function snapshotState(s: AppState): PersistedState {
+  const out = {} as Record<string, unknown>;
+  for (const key of PERSISTED_KEYS) {
+    out[key] = s[key];
+  }
+  return out as PersistedState;
+}
+
 export const useApp = create<AppState>()(
   persist(
     (set, get) => ({
@@ -437,27 +476,7 @@ export const useApp = create<AppState>()(
     {
       name: "hybrid-store-v2",
       storage: createJSONStorage(() => (typeof window !== "undefined" ? localStorage : (undefined as unknown as Storage))),
-      partialize: (s) => ({
-        authed: s.authed,
-        email: s.email,
-        onboarded: s.onboarded,
-        profile: s.profile,
-        preferences: s.preferences,
-        benchmarks: s.benchmarks,
-        activeMode: s.activeMode,
-        activeGoal: s.activeGoal,
-        upcomingCompetition: s.upcomingCompetition,
-        sessions: s.sessions,
-        logs: s.logs,
-        prs: s.prs,
-        hyroxSimulations: s.hyroxSimulations,
-        raceResults: s.raceResults,
-        coachAthletes: s.coachAthletes,
-        coachWorkouts: s.coachWorkouts,
-        checkins: s.checkins,
-        recommendations: s.recommendations,
-        tier: s.tier,
-      }),
+      partialize: (s) => snapshotState(s),
     },
   ),
 );

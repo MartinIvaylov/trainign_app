@@ -776,6 +776,47 @@ A recommendation the engine produced for an athlete (e.g., "deload this week").
 
 ---
 
+### 2.33 WebhookEvent
+
+Processed webhook events (Stripe / App Store / Play Store) for idempotency.
+Stripe retries failed deliveries, so the same event may arrive twice; the
+unique `(provider, externalId)` constraint lets route handlers skip replays.
+
+| Field       | Type     | Notes                                        |
+|-------------|----------|----------------------------------------------|
+| id          | String   | PK                                           |
+| provider    | String   | stripe / app_store / play_store              |
+| externalId  | String   | provider event id (e.g. Stripe `evt_...`)    |
+| type        | String   | e.g. `checkout.session.completed`            |
+| processedAt | DateTime | @default(now())                              |
+
+**Indexes:** `(provider, externalId)` unique, `(type)`.
+
+**RLS:** None — service role only (route handlers write, no client access).
+
+---
+
+### 2.34 StateSnapshot
+
+Server-side mirror of the client Zustand store (write-through cache). The web
+app pushes debounced JSON snapshots after mutations and pulls the latest
+snapshot on login / app start; newest `revision` wins.
+
+| Field     | Type     | Notes                                        |
+|----------|----------|-----------------------------------------------|
+| id       | String   | PK                                            |
+| email    | String   | unique — user key                             |
+| revision | DateTime | ISO timestamp of the snapshot (last write wins) |
+| data     | Json     | persisted store slice                         |
+| createdAt| DateTime | @default(now())                               |
+| updatedAt| DateTime | @updatedAt                                    |
+
+**Indexes:** `email` unique.
+
+**RLS:** Owner `SELECT` only; writes via the service-role `/api/sync` route.
+
+---
+
 ## 3. RLS Policy Recommendations
 
 | Model                | RLS policy                                                                                       |
@@ -812,6 +853,8 @@ A recommendation the engine produced for an athlete (e.g., "deload this week").
 | Subscription         | User + admin only.                                                                              |
 | AiMessage            | Athlete only.                                                                                    |
 | AiRecommendation     | Athlete + authorised coaches.                                                                   |
+| WebhookEvent         | No policies — service role only (default-deny).                                                |
+| StateSnapshot        | Owner `SELECT` only (keyed on the user's verified email); writes via service role.              |
 
 ---
 

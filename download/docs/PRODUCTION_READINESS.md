@@ -24,7 +24,7 @@ This document tracks everything required before HYBRID goes live. Items are grou
 | Password reset flow | ⛔ | `supabase.auth.resetPasswordForEmail` |
 | Email verification | ⛔ | Configure email templates in Supabase |
 | Account deletion | ✅ | UI in Settings → Data; backend delete-cascade pending |
-| RLS policies (every sensitive table) | 🟡 | Documented in `DATABASE_SCHEMA.md`; needs migration to Postgres |
+| RLS policies (every sensitive table) | 🟡 | Full SQL in `supabase/migrations/0001+0002`; needs applying on the provisioned Supabase project |
 | API key isolation (server-only) | ✅ | `/api/coach` keeps z-ai-web-dev-sdk on server |
 | CSRF protection | ⛔ | Next.js built-in for Server Actions; add for any custom endpoints |
 | Rate limiting | 🟡 | Documented; implementation pending |
@@ -34,10 +34,12 @@ This document tracks everything required before HYBRID goes live. Items are grou
 
 | Item | Status | Notes |
 |------|--------|-------|
-| 28-model Prisma schema | ✅ | In `prisma/schema.prisma` |
+| 28-model Prisma schema | ✅ | In `prisma/schema.prisma` (now 30 models: + `WebhookEvent`, `StateSnapshot`) |
 | SQLite migration | ✅ | `db/custom.db` synced |
+| Supabase SQL migrations | 🟡 | `0001_init.sql` + `0002_sync_and_webhook_events.sql` written; apply after project provisioning |
 | Postgres migration | ⛔ | Run `prisma migrate dev` against Supabase Postgres |
-| RLS policies (every table) | 🟡 | Defined in `DATABASE_SCHEMA.md`; need SQL migrations |
+| RLS policies (every table) | 🟡 | SQL written in migrations; needs applying |
+| Write-through cache (client → server state sync) | ✅ | `/api/sync` + `src/lib/sync.ts`; browser-verified cross-device restore |
 | Seed data (HYROX stations, CrossFit benchmarks, ATHX tests) | ✅ | Inline in `src/lib/competition-rules/` |
 | Daily backups | ⛔ | Enable Supabase scheduled backups |
 | Point-in-time recovery | ⛔ | Enable Supabase PITR add-on |
@@ -87,11 +89,11 @@ This document tracks everything required before HYBRID goes live. Items are grou
 | Community | ✅ | Challenges, leaderboard, activity feed |
 | Coach Dashboard | ✅ | Roster, invite, athlete detail, program builder, check-ins |
 | Profile + mode switching | ✅ | Replace / Add / Pause modal preserves history |
-| Settings + Subscription | ✅ | Free / Pro / Pro Annual / Coach tiers (mock) |
+| Settings + Subscription | ✅ | Tier cards wired to `/api/billing/checkout` + Manage billing → `/api/billing/portal` |
 | Privacy Policy | ✅ | 10 sections, GDPR-compliant |
 | Terms of Service | ✅ | 13 sections |
 | Loading / empty / error states | ✅ | Throughout |
-| Offline workout logging | 🟡 | Zustand persist locally; background sync pending |
+| Offline workout logging | ✅ | Zustand persist locally + write-through sync to `/api/sync` (debounced push, LWW reconcile) |
 
 ## 6. Mobile app
 
@@ -122,13 +124,16 @@ This document tracks everything required before HYBRID goes live. Items are grou
 |------|--------|-------|
 | Supabase project | ⛔ | Provision project, set `DATABASE_URL` and `SUPABASE_*` env vars |
 | Prisma migration to Postgres | ⛔ | `prisma migrate deploy` |
-| RLS SQL policies | ⛔ | Generate from `DATABASE_SCHEMA.md` |
+| RLS SQL policies | 🟡 | Written in `supabase/migrations/`; apply on the provisioned project |
 | Edge Functions (Stripe webhook, App Store, Play Store) | ⛔ | Deploy via Supabase CLI |
-| Stripe products + prices | ⛔ | Create Free / Pro / Pro Annual / Coach / Gym products |
-| Stripe webhook signing | ⛔ | `/api/webhooks/stripe` route |
+| Stripe products + prices | 🟡 | Create Free / Pro / Pro Annual / Coach / Gym products; ids go in `STRIPE_PRICE_*` env vars |
+| Stripe Checkout session creation | ✅ | `/api/billing/checkout` — real session when keys set; preview entitlement otherwise |
+| Stripe Customer Portal | ✅ | `/api/billing/portal` — resolves customer by email; preview response without keys |
+| Stripe webhook signing | ✅ | `/api/webhooks/stripe` verifies via SDK `constructEvent`; writes `Subscription` + idempotency via `WebhookEvent` |
+| Webhook idempotency (replay protection) | ✅ | Unique `(provider, externalId)` claim before processing |
 | App Store Server Notifications | ⛔ | `/api/webhooks/appstore` route |
 | Play Store Real-time Developer Notifications | ⛔ | `/api/webhooks/playstore` route |
-| Entitlement sync across web/iOS/Android | 🟡 | Documented; implementation pending |
+| Entitlement sync across web/iOS/Android | 🟡 | Single `Subscription` table + `applyEntitlement()` write path; IAP providers pending |
 | Apple Health | ⛔ | |
 | Health Connect | ⛔ | |
 | Garmin Connect IQ | ⛔ | API access application pending |
@@ -170,7 +175,7 @@ This document tracks everything required before HYBRID goes live. Items are grou
 | Unit tests for `competition-rules` | ✅ | 34 tests covering HYROX stations, `simulateHyrox`, `formatHMS`, ATHX disciplines, `normaliseAthxTest`, `estimateAthxScore`, `pairCombinedScore`, CrossFit benchmarks |
 | Lint passes | ✅ | `bun run lint` — 0 errors |
 | Manual browser E2E | ✅ | Full user journey verified: landing → auth → onboarding → dashboard → coach → train → compete → performance → community → profile → settings → coach dashboard |
-| Integration tests for API routes | ⛔ | |
+| Integration tests for API routes | ✅ | 36 across `api.test.ts` (coach, cron, webhook) + `billing.test.ts` (checkout, portal, sync, webhook→DB) |
 | E2E tests (Playwright) | ⛔ | |
 | Mobile E2E (Detox / Maestro) | ⛔ | |
 

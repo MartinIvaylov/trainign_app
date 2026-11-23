@@ -1,12 +1,45 @@
 # HYBRID Performance Platform — Implementation Progress
 
-> **Last updated:** v0.3.0 sprint  
+> **Last updated:** v0.6.0 sprint  
 > **Source of truth:** the codebase in `/home/z/my-project/`  
 > **Status:** Phase 0 + Phase 1 + Phase 3 shipped; Phases 2, 4, 5, 6 substantially wired
 
 ---
 
-## v0.5.1 Changelog (this sprint)
+## v0.6.0 Changelog (this sprint)
+
+> Next Actions #4 (Phase 6 backend: Supabase + write-through cache) and #5
+> (Phase 6 payments: Stripe Checkout + Portal + webhooks → `Subscription`).
+
+### Phase 6 Backend — Write-Through Cache (Next Action #4)
+
+- **`StateSnapshot` + `WebhookEvent` models** added to `prisma/schema.prisma` (30 models now) and pushed to the dev SQLite database.
+- **`supabase/migrations/0002_sync_and_webhook_events.sql`** — production SQL for both tables with RLS (default-deny on `webhook_events`; owner-read on `state_snapshots`) and the `updated_at` trigger.
+- **`GET/POST /api/sync`** (`src/app/api/sync/route.ts`) — snapshot pull/push endpoint: email-keyed, last-write-wins by `revision` (stale pushes rejected with `conflict: true`), 1.5 MB payload cap (413), 503 when the DB is unreachable.
+- **`src/lib/sync.ts`** — browser write-through cache client: subscribes to the persisted slice of the Zustand store, bumps a local revision on every mutation, pushes debounced (2 s) snapshots with exponential-backoff retry (5 tries, 30 s cap), adopts newer server snapshots on login/start, and flushes on `online`. Toasts/navigation never sync.
+- **`src/components/hybrid/sync-manager.tsx`** — mounts the sync client once for the whole app; waits for the persisted store to hydrate before reconciling so an empty store is never pushed over a newer snapshot.
+- **Store refactor** — `PERSISTED_KEYS` + `snapshotState()` exported from `app-store.ts`; localStorage persistence and server sync share one slice definition (no drift possible).
+- **Browser-verified cross-device restore**: wipe localStorage → sign in with the same email → server snapshot hydrates the store → dashboard appears with profile, plan and tier intact (`pro`).
+
+### Phase 6 Payments — Stripe Checkout + Portal + Webhooks (Next Action #5)
+
+- **Stripe SDK installed** (`stripe@23.2.0`); `src/lib/stripe.ts` upgraded from scaffold to real client: lazy cached `getStripe()`, `isStripeConfigured()`, price↔tier mapping kept and sourced from `STRIPE_PRICE_*` env vars.
+- **`src/lib/entitlements.ts`** — the single entitlement write path: `applyEntitlement()` (upserts `User` + `Subscription`, resolves by internal id or email, optional tier keeps the existing one on update), `getEntitlement()`, `claimWebhookEvent()` (idempotency claim). Degrades to a no-op when the DB is unreachable.
+- **`POST /api/webhooks/stripe`** rewritten: real signature verification via `stripe.webhooks.constructEvent` whenever `STRIPE_SECRET_KEY` is set (400 on bad signature); event-id idempotency via `WebhookEvent` (replays acknowledged with `duplicate: true` and skipped); four event types now write the `Subscription` table — `checkout.session.completed` (activate tier), `customer.subscription.updated` (tier/status/period-end), `customer.subscription.deleted` (free/cancelled), `invoice.payment_failed` (past_due, tier kept). Preview mode (no Stripe keys) still exercises the full event→DB flow for local dev.
+- **`POST /api/billing/checkout`** — real Stripe Checkout Session (subscription mode, `customer_email`, metadata for webhook resolution) when keys are set; preview mode applies the entitlement directly (provider `stripe_test`) so the flow is end-to-end testable. `free` is a downgrade: preview applies it, Stripe mode points at the portal.
+- **`POST /api/billing/portal`** — Stripe Customer Portal session (customer resolved by email via `customers.list`); preview mode returns `{ mode: "preview" }`.
+- **Settings UI wired** — tier cards call the checkout route (redirect on `mode: "stripe"`, store update + toast on preview); new **Manage billing** button calls the portal route; buttons disable while a request is in flight. Also fixed the local `Tier` type missing `"gym"`.
+
+### Testing
+
+- **21 new integration tests** in `src/app/api/__tests__/billing.test.ts`: checkout (invalid JSON/email/tier, preview entitlement + DB row, free downgrade), portal (validation, preview), sync (validation, round-trip, stale-push conflict, unknown email, 413 cap), webhooks (checkout→subscription row, replay idempotency incl. interleaved tier change, subscription.updated tier+period, payment_failed past_due with tier kept, deleted→free, bad-signature 400 when `STRIPE_SECRET_KEY` set).
+- **138 tests pass** (28 engine + 34 rules + 23 prediction/analysis + 17 auto-adapt + 15 API + 21 billing) across 5 files; suite is re-run safe (unique emails/event ids per run).
+- Lint passes 0 errors; production build succeeds with the three new routes (`/api/billing/checkout`, `/api/billing/portal`, `/api/sync`).
+- Prisma query log quieted to dev-only (`db.ts`).
+
+---
+
+## v0.5.1 Changelog
 
 ### Testing — Auto-Adapt Unit Tests Added
 
@@ -387,14 +420,15 @@ The MVP (Phase 1) is considered done when all 12 of the following are true. All 
 
 In priority order:
 
-1. **Phase 3 follow-through:** wire `evaluateAdaptation()` to auto-apply suggestions to the upcoming week's sessions in the Plan view, with an "Undo" affordance.
-2. **Engine unit tests:** set up Jest, cover `src/lib/training-engine/index.ts` and `src/lib/competition-rules/*.ts` to 100%.
-3. **E2E tests:** Playwright for the full user journey (landing → settings).
-4. **Phase 6 backend:** deploy Supabase, apply Prisma migrations, enable RLS, replace the Zustand store with a write-through cache.
-5. **Phase 6 payments:** wire Stripe Checkout + Customer Portal + webhooks → `Subscription` table.
-6. **Phase 5 coach surface:** scaffold coach dashboard, athlete invite flow, custom programming UI.
-7. **Phase 2 mobile:** scaffold Expo app, share `training-engine` + `validation` + `ui-tokens` packages.
-8. **Privacy + Terms pages:** required before any production launch.
+1. ✅ **Phase 3 follow-through** (done v0.4.0): `evaluateAdaptation()` auto-apply with Undo in the Plan/dashboard surfaces.
+2. ✅ **Engine unit tests** (done v0.5.x): 117 tests across engine, rules, prediction, auto-adapt.
+3. 🟡 **E2E tests:** Playwright for the full user journey (manual browser verification covers it today; 36 API integration tests automated).
+4. ✅ **Phase 6 backend** (done v0.6.0): SQL migrations 0001+0002 with RLS; `/api/sync` write-through cache with LWW reconcile; store persistence and server sync share one slice definition. Remaining for production: provision the Supabase project and apply the migrations.
+5. ✅ **Phase 6 payments** (done v0.6.0): Stripe Checkout + Customer Portal + verified webhooks → `Subscription` table with replay idempotency. Remaining for production: create the Stripe products and set `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_*`.
+6. ✅ **Phase 5 coach surface** (done v0.4.0/v0.5.0): coach dashboard, athlete invite flow, custom programming UI.
+7. ✅ **Phase 2 mobile** (done v0.3.0): Expo app scaffold sharing the store/engine.
+8. ✅ **Privacy + Terms pages** (done).
+9. **Real auth:** replace the mock in `auth.tsx` with Supabase Auth (email/password + OAuth), then swap the email-keyed sync/billing surfaces for session-based user ids.
 
 ---
 

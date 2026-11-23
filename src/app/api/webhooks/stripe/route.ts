@@ -1,52 +1,40 @@
 // =============================================================================
-// HYBRID Performance Platform — Stripe webhook handler (SCAFFOLD)
+// HYBRID Performance Platform — Stripe webhook handler
 // =============================================================================
 //
-// This is a scaffold implementation. In production you MUST:
+// Full implementation (Stripe SDK installed):
 //
-//   1. Install the Stripe SDK:
-//        bun add stripe
+//   1. When `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` are configured, the
+//      raw body is verified with `stripe.webhooks.constructEvent` — the only
+//      safe way to trust a webhook (401/400 on missing/invalid signature).
+//   2. Idempotency: the event id is claimed in the `WebhookEvent` table before
+//      processing. Replayed events (Stripe retries) are acknowledged with 200
+//      and skipped — the entitlement is never double-applied.
+//   3. Entitlements: each event maps to an upsert on the `Subscription` table
+//      via `applyEntitlement()` (see `src/lib/entitlements.ts`):
+//        checkout.session.completed        → activate tier
+//        customer.subscription.updated     → update tier / status / period end
+//        customer.subscription.deleted     → downgrade to free, cancelled
+//        invoice.payment_failed            → mark past_due (tier unchanged)
 //
-//   2. Initialise the Stripe client at the top of this file:
-//        import Stripe from "stripe";
-//        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-//
-//   3. Verify the event signature using the SDK instead of trusting the body:
-//        const event = stripe.webhooks.constructEvent(
-//          rawBody,
-//          signature,
-//          process.env.STRIPE_WEBHOOK_SECRET!
-//        );
-//
-//   4. After verifying, update the Supabase `Subscription` table via Prisma:
-//        await db.subscription.upsert({
-//          where: { userId },
-//          create: { userId, tier, status, provider: "stripe", providerRef: subscriptionId, currentPeriodEnd },
-//          update: { tier, status, currentPeriodEnd, providerRef: subscriptionId },
-//        });
-//
-// Until then, this handler reads the raw body, requires a `stripe-signature`
-// header to be present (returning 401 if missing), then inspects the parsed
-// JSON to map Stripe price IDs to internal tiers. It DOES NOT cryptographically
-// verify the signature — that is only safe to ship once the Stripe SDK is
-// installed and the `constructEvent` call is wired up.
-//
-// Event handling (scaffold):
-//   - checkout.session.completed  → create/activate subscription
-//   - customer.subscription.updated → update tier
-//   - customer.subscription.deleted  → downgrade to free
-//   - invoice.payment_failed        → mark subscription past_due
+// Preview mode (no `STRIPE_SECRET_KEY`, e.g. this sandbox / local dev):
+// the signature header must be present and `STRIPE_WEBHOOK_SECRET` set, but
+// the payload is trusted as-is so the full event → database flow can be
+// exercised end-to-end without live Stripe credentials. Signature-only trust
+// is gated on the absence of a real secret key, so production always verifies
+// cryptographically.
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { tierFromPrice, type Tier } from "@/lib/stripe";
+import { getStripe, isStripeConfigured, tierFromPrice, type Tier } from "@/lib/stripe";
+import { applyEntitlement, claimWebhookEvent } from "@/lib/entitlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Minimal shape of the events we inspect in this scaffold. Real Stripe events
-// are far richer; once the SDK is installed, replace `any` with
-// `Stripe.Event` and delete these interfaces.
+// Minimal shape of the events we inspect. Real Stripe events are far richer;
+// these interfaces keep the handler decoupled from the SDK types so preview
+// mode (plain JSON) and production (verified events) share one code path.
 interface StripeItem {
   price?: { id?: string } | null;
 }
@@ -57,7 +45,7 @@ interface StripeSubscriptionObject {
   status?: string;
   current_period_end?: number;
   items?: { data?: StripeItem[] };
-  metadata?: { user_id?: string } | Record<string, string | undefined>;
+  metadata?: Record<string, string | undefined>;
 }
 
 interface StripeCheckoutObject {
@@ -65,7 +53,7 @@ interface StripeCheckoutObject {
   customer?: string;
   subscription?: string;
   client_reference_id?: string;
-  metadata?: { user_id?: string; price_id?: string } | Record<string, string | undefined>;
+  metadata?: Record<string, string | undefined>;
 }
 
 interface StripeInvoiceObject {
@@ -74,6 +62,7 @@ interface StripeInvoiceObject {
   subscription?: string;
   parent?: { subscription_item?: string | null };
   lines?: { data?: StripeItem[] };
+  metadata?: Record<string, string | undefined>;
 }
 
 interface ScaffoldStripeEvent {
@@ -92,19 +81,23 @@ interface ScaffoldStripeEvent {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Pull a user id out of any of the common Stripe metadata locations. */
-function extractUserId(
+/** Pull a user reference out of any of the common Stripe metadata locations. */
+function extractUserRef(
   obj: StripeSubscriptionObject | StripeCheckoutObject | StripeInvoiceObject | Record<string, unknown>,
-): string | null {
+): { userId: string | null; email: string | null } {
   const metadata = (obj as { metadata?: Record<string, string | undefined> }).metadata;
-  if (metadata && typeof metadata.user_id === "string" && metadata.user_id.length > 0) {
-    return metadata.user_id;
-  }
+  const userId =
+    metadata && typeof metadata.user_id === "string" && metadata.user_id.length > 0
+      ? metadata.user_id
+      : null;
+  const email =
+    metadata && typeof metadata.email === "string" && metadata.email.includes("@")
+      ? metadata.email
+      : null;
   const clientRef = (obj as StripeCheckoutObject).client_reference_id;
-  if (typeof clientRef === "string" && clientRef.length > 0) {
-    return clientRef;
-  }
-  return null;
+  const fromClientRef =
+    typeof clientRef === "string" && clientRef.length > 0 ? clientRef : null;
+  return { userId: userId ?? fromClientRef, email };
 }
 
 /** Find the first price id on a subscription or invoice line item. */
@@ -128,50 +121,104 @@ function extractPriceId(
   return null;
 }
 
-/** Convert a unix epoch (seconds) to an ISO string, or null if missing. */
-function toIso(epochSeconds: number | undefined): string | null {
+/** Convert a unix epoch (seconds) to a Date, or null if missing. */
+function toDate(epochSeconds: number | undefined): Date | null {
   if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) return null;
-  return new Date(epochSeconds * 1000).toISOString();
+  return new Date(epochSeconds * 1000);
+}
+
+/** Map a Stripe subscription status onto our internal status vocabulary. */
+function mapStatus(status: string | undefined): "active" | "cancelled" | "past_due" | "trialing" | null {
+  switch (status) {
+    case "active":
+      return "active";
+    case "trialing":
+      return "trialing";
+    case "past_due":
+    case "unpaid":
+      return "past_due";
+    case "canceled":
+    case "cancelled":
+      return "cancelled";
+    default:
+      return null; // incomplete / paused / unknown — leave the row untouched
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Event processors (scaffold — no DB writes yet)
+// Event processors — each returns the entitlement to apply (or null)
 // ---------------------------------------------------------------------------
 
-function handleCheckoutCompleted(event: ScaffoldStripeEvent): { processed: boolean; tier: Tier | null; userId: string | null } {
+interface PendingEntitlement {
+  userId: string | null;
+  email: string | null;
+  tier?: Tier;
+  status: "active" | "cancelled" | "past_due" | "trialing";
+  providerRef: string | null;
+  currentPeriodEnd?: Date | null;
+}
+
+function processCheckoutCompleted(event: ScaffoldStripeEvent): PendingEntitlement | null {
   const obj = event.data?.object as StripeCheckoutObject | undefined;
-  if (!obj) return { processed: false, tier: null, userId: null };
-  const userId = extractUserId(obj);
-  const priceId = (obj.metadata as { price_id?: string } | undefined)?.price_id ?? null;
+  if (!obj) return null;
+  const { userId, email } = extractUserRef(obj);
+  const priceId = obj.metadata?.price_id ?? null;
   const tier = priceId ? tierFromPrice(priceId) : null;
-  // Production: upsert Subscription row with tier, status="active",
-  // provider="stripe", providerRef=obj.subscription, currentPeriodEnd from invoice.
-  return { processed: Boolean(userId && tier), tier, userId };
+  if (!userId && !email) return null;
+  if (priceId && !tier) return null; // unknown price — do not guess
+  return {
+    userId,
+    email,
+    tier: tier ?? undefined,
+    status: "active",
+    providerRef: obj.subscription ?? obj.id ?? null,
+  };
 }
 
-function handleSubscriptionUpdated(event: ScaffoldStripeEvent): { processed: boolean; tier: Tier | null; userId: string | null } {
+function processSubscriptionUpdated(event: ScaffoldStripeEvent): PendingEntitlement | null {
   const obj = event.data?.object as StripeSubscriptionObject | undefined;
-  if (!obj) return { processed: false, tier: null, userId: null };
-  const userId = extractUserId(obj);
+  if (!obj) return null;
+  const { userId, email } = extractUserRef(obj);
   const priceId = extractPriceId(obj);
   const tier = priceId ? tierFromPrice(priceId) : null;
-  const _periodEnd = toIso(obj.current_period_end);
-  // Production: update Subscription.tier + currentPeriodEnd.
-  return { processed: Boolean(userId && tier), tier, userId };
+  const status = mapStatus(obj.status) ?? "active";
+  if (!userId && !email) return null;
+  return {
+    userId,
+    email,
+    tier: tier ?? undefined,
+    status,
+    providerRef: obj.id ?? null,
+    currentPeriodEnd: toDate(obj.current_period_end) ?? undefined,
+  };
 }
 
-function handleSubscriptionDeleted(event: ScaffoldStripeEvent): { processed: boolean; tier: Tier; userId: string | null } {
+function processSubscriptionDeleted(event: ScaffoldStripeEvent): PendingEntitlement | null {
   const obj = event.data?.object as StripeSubscriptionObject | undefined;
-  const userId = obj ? extractUserId(obj) : null;
-  // Production: set Subscription.tier="free", status="cancelled".
-  return { processed: Boolean(userId), tier: "free", userId };
+  if (!obj) return null;
+  const { userId, email } = extractUserRef(obj);
+  if (!userId && !email) return null;
+  return {
+    userId,
+    email,
+    tier: "free",
+    status: "cancelled",
+    providerRef: obj.id ?? null,
+  };
 }
 
-function handleInvoicePaymentFailed(event: ScaffoldStripeEvent): { processed: boolean; userId: string | null } {
+function processInvoicePaymentFailed(event: ScaffoldStripeEvent): PendingEntitlement | null {
   const obj = event.data?.object as StripeInvoiceObject | undefined;
-  const userId = obj ? extractUserId(obj) : null;
-  // Production: set Subscription.status="past_due".
-  return { processed: Boolean(userId), userId };
+  if (!obj) return null;
+  const { userId, email } = extractUserRef(obj);
+  if (!userId && !email) return null;
+  return {
+    userId,
+    email,
+    // No tier: `applyEntitlement` keeps the existing tier on update.
+    status: "past_due",
+    providerRef: obj.subscription ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -180,12 +227,10 @@ function handleInvoicePaymentFailed(event: ScaffoldStripeEvent): { processed: bo
 
 export async function POST(req: NextRequest) {
   try {
-    // 1. Read the raw body. Stripe requires the original bytes for signature
-    //    verification — do not use req.json() before verifying in production.
+    // 1. Read the raw body — signature verification needs the original bytes.
     const rawBody = await req.text();
 
-    // 2. Require a stripe-signature header. This is NOT cryptographic
-    //    verification — see the file header for the production upgrade path.
+    // 2. A stripe-signature header is always required.
     const signature = req.headers.get("stripe-signature");
     if (!signature || signature.length === 0) {
       return NextResponse.json(
@@ -201,65 +246,90 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Parse the body. In production replace this with
-    //    `stripe.webhooks.constructEvent(rawBody, signature, secret)`.
+    // 3. Verify + parse the event.
+    //    Production (STRIPE_SECRET_KEY set): cryptographically verified via
+    //    the SDK. Preview mode: JSON-parsed and trusted (see file header).
     let event: ScaffoldStripeEvent;
-    try {
-      event = JSON.parse(rawBody) as ScaffoldStripeEvent;
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    if (isStripeConfigured()) {
+      const stripe = getStripe();
+      if (!stripe) {
+        return NextResponse.json({ error: "Stripe client unavailable" }, { status: 500 });
+      }
+      try {
+        event = stripe.webhooks.constructEvent(
+          rawBody,
+          signature,
+          process.env.STRIPE_WEBHOOK_SECRET,
+        ) as unknown as ScaffoldStripeEvent;
+      } catch {
+        return NextResponse.json({ error: "Signature verification failed" }, { status: 400 });
+      }
+    } else {
+      try {
+        event = JSON.parse(rawBody) as ScaffoldStripeEvent;
+      } catch {
+        return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+      }
     }
 
     const type = event.type ?? "unknown";
 
-    // 4. Route the event to the appropriate scaffold handler.
-    let processed = false;
-    let tier: Tier | null = null;
-    let userId: string | null = null;
+    // 4. Idempotency: claim the event id before processing. A replay (Stripe
+    //    retry) or an unreachable DB both short-circuit to "do not process".
+    let duplicate = false;
+    if (event.id) {
+      const claimed = await claimWebhookEvent("stripe", event.id, type);
+      if (!claimed) duplicate = true;
+    }
+    if (duplicate) {
+      return NextResponse.json({ received: true, type, processed: false, duplicate: true });
+    }
 
+    // 5. Route the event to its processor and apply the entitlement.
+    let pending: PendingEntitlement | null = null;
     switch (type) {
-      case "checkout.session.completed": {
-        const r = handleCheckoutCompleted(event);
-        processed = r.processed;
-        tier = r.tier;
-        userId = r.userId;
+      case "checkout.session.completed":
+        pending = processCheckoutCompleted(event);
         break;
-      }
-      case "customer.subscription.updated": {
-        const r = handleSubscriptionUpdated(event);
-        processed = r.processed;
-        tier = r.tier;
-        userId = r.userId;
+      case "customer.subscription.updated":
+        pending = processSubscriptionUpdated(event);
         break;
-      }
-      case "customer.subscription.deleted": {
-        const r = handleSubscriptionDeleted(event);
-        processed = r.processed;
-        tier = r.tier;
-        userId = r.userId;
+      case "customer.subscription.deleted":
+        pending = processSubscriptionDeleted(event);
         break;
-      }
-      case "invoice.payment_failed": {
-        const r = handleInvoicePaymentFailed(event);
-        processed = r.processed;
-        userId = r.userId;
+      case "invoice.payment_failed":
+        pending = processInvoicePaymentFailed(event);
         break;
-      }
       default:
-        processed = false;
+        pending = null;
         break;
     }
 
-    // 5. Acknowledge receipt. Vercel/Stripe will retry on non-2xx, so we only
-    //    return 200 — even for unhandled event types — to avoid retry storms.
-    //    The `processed` flag tells the caller whether we mapped the event to
-    //    an internal tier transition.
+    let processed = false;
+    let tier: Tier | null = null;
+    if (pending) {
+      const result = await applyEntitlement({
+        userId: pending.userId,
+        email: pending.email,
+        tier: pending.tier,
+        status: pending.status,
+        provider: "stripe",
+        providerRef: pending.providerRef,
+        currentPeriodEnd: pending.currentPeriodEnd ?? null,
+      });
+      processed = result.ok;
+      tier = result.tier ?? pending.tier ?? null;
+    }
+
+    // 6. Acknowledge receipt with 200 for every parseable event — including
+    //    unhandled types — so Stripe does not retry-storm. `processed` tells
+    //    the caller whether an entitlement row was actually written.
     return NextResponse.json({
       received: true,
       type,
       processed,
       tier,
-      userId,
+      userId: pending?.userId ?? pending?.email ?? null,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

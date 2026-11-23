@@ -10,7 +10,7 @@ import {
   Watch, Database, Info, Check, AlertTriangle, Heart, Smartphone, Activity, Zap, Shield, FileText,
 } from "lucide-react";
 
-type Tier = "free" | "pro" | "pro_annual" | "coach";
+type Tier = "free" | "pro" | "pro_annual" | "coach" | "gym";
 
 interface TierOption {
   id: Tier;
@@ -113,6 +113,8 @@ export function SettingsView() {
   const tier = useApp((s) => s.tier);
   const setTier = useApp((s) => s.setTier);
   const pushToast = useApp((s) => s.pushToast);
+  const email = useApp((s) => s.email);
+  const [billingBusy, setBillingBusy] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<Record<string, boolean>>(
     () => Object.fromEntries(NOTIFICATIONS.map((n) => [n.id, n.defaultOn])),
   );
@@ -153,6 +155,112 @@ export function SettingsView() {
     });
   }
 
+  // -------------------------------------------------------------------------
+  // Billing — tier selection goes through /api/billing/checkout so the
+  // entitlement is written server-side (Subscription table). With live
+  // Stripe credentials this redirects to hosted Checkout; in preview mode
+  // the entitlement is applied directly.
+  // -------------------------------------------------------------------------
+
+  async function handleTierSelect(t: TierOption) {
+    if (t.id === tier || billingBusy) return;
+    if (!email) {
+      pushToast({
+        kind: "error",
+        title: "Sign in required",
+        body: "Sign in again to change your subscription.",
+      });
+      return;
+    }
+    setBillingBusy(t.id);
+    try {
+      const res = await fetch("/api/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, tier: t.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        mode?: string;
+        url?: string | null;
+        tier?: Tier | null;
+        error?: string;
+      };
+      if (!res.ok) {
+        pushToast({
+          kind: "error",
+          title: "Checkout failed",
+          body: data.error ?? "Please try again.",
+        });
+        return;
+      }
+      if (data.mode === "stripe" && data.url) {
+        // Real Stripe hosted checkout — the webhook completes the flow.
+        window.location.href = data.url;
+        return;
+      }
+      // Preview mode: entitlement already written server-side.
+      if (data.tier) {
+        setTier(data.tier);
+        pushToast({
+          kind: "info",
+          title: "Preview mode",
+          body: "Entitlement written to the database — no real payment was processed.",
+        });
+      }
+    } catch {
+      pushToast({
+        kind: "error",
+        title: "Network error",
+        body: "Could not reach the billing service.",
+      });
+    } finally {
+      setBillingBusy(null);
+    }
+  }
+
+  async function handleManageBilling() {
+    if (billingBusy) return;
+    if (!email) return;
+    setBillingBusy("portal");
+    try {
+      const res = await fetch("/api/billing/portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        mode?: string;
+        url?: string | null;
+        error?: string;
+      };
+      if (!res.ok) {
+        pushToast({
+          kind: "error",
+          title: "Billing portal unavailable",
+          body: data.error ?? "Please try again.",
+        });
+        return;
+      }
+      if (data.mode === "stripe" && data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      pushToast({
+        kind: "info",
+        title: "Preview mode",
+        body: "The billing portal needs live Stripe credentials. Tier changes here are simulated.",
+      });
+    } catch {
+      pushToast({
+        kind: "error",
+        title: "Network error",
+        body: "Could not reach the billing service.",
+      });
+    } finally {
+      setBillingBusy(null);
+    }
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -170,15 +278,17 @@ export function SettingsView() {
         <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {TIERS.map((t) => {
             const active = tier === t.id;
+            const busy = billingBusy === t.id;
             return (
               <button
                 key={t.id}
-                onClick={() => setTier(t.id)}
+                onClick={() => void handleTierSelect(t)}
+                disabled={busy || billingBusy !== null}
                 className={`p-4 rounded-md border text-left transition relative ${
                   active
                     ? "border-primary bg-primary/10"
                     : "border-border hover:bg-secondary/30"
-                }`}
+                } ${busy || (billingBusy !== null && !active) ? "opacity-60" : ""}`}
               >
                 {active && (
                   <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary text-primary-foreground grid place-items-center">
@@ -204,10 +314,20 @@ export function SettingsView() {
             );
           })}
         </div>
-        <div className="mt-4 text-xs text-muted-foreground">
-          Subscription architecture is wired for Stripe (web) and in-app
-          purchase (iOS/Android). Entitlements are synchronized across
-          platforms. This demo runs in mock mode — no real payment is processed.
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => void handleManageBilling()}
+            disabled={billingBusy !== null}
+            className="px-4 py-2 rounded-md border border-border text-sm font-medium hover:bg-secondary/40 transition disabled:opacity-60"
+          >
+            Manage billing
+          </button>
+          <div className="text-xs text-muted-foreground">
+            Tier changes run through Stripe Checkout (web) with the
+            entitlement stored in the Subscription table. In-app purchase
+            (iOS/Android) shares the same entitlement sync. This preview runs
+            without live Stripe keys — changes are simulated server-side.
+          </div>
         </div>
       </Card>
 

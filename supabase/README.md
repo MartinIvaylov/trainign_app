@@ -9,6 +9,9 @@ database: SQL migrations, planned Edge Functions, and planned seed data.
 supabase/
   migrations/          # PostgreSQL migrations applied to Supabase
     0001_init.sql      # Core schema: 32 tables, indexes, RLS policies
+    0002_sync_and_webhook_events.sql
+                       # webhook_events (idempotency) + state_snapshots
+                       # (client write-through cache) + their RLS
   functions/           # (planned) Supabase Edge Functions
   seed/                # (planned) Reference / seed data
 ```
@@ -20,7 +23,10 @@ Supabase. The initial migration `0001_init.sql` mirrors the Prisma schema in
 `prisma/schema.prisma` (32 models) but in raw SQL with PostgreSQL idioms:
 UUID primary keys (`gen_random_uuid()`), `timestamptz`, snake_case
 identifiers, foreign keys with `on delete cascade`, indexes, and Row Level
-Security policies.
+Security policies. `0002_sync_and_webhook_events.sql` adds the
+`webhook_events` table (processed-event idempotency for the Stripe webhook
+route) and `state_snapshots` (the server-side mirror of the client store used
+by `/api/sync`).
 
 ### How to apply
 
@@ -75,6 +81,8 @@ Policy summary (see the SQL for the canonical definitions):
 | coach_profiles        | Anyone sees coach profiles (select) — discovery               |
 | challenges            | Anyone sees challenges (select)                              |
 | workouts / exercise_library / benchmarks / competitions | Anyone sees (select) — library content |
+| webhook_events        | No policies — service role only (default-deny)                 |
+| state_snapshots      | Owner `select` only (own email); writes via service role        |
 
 ## `functions/` (planned)
 
