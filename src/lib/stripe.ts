@@ -97,6 +97,14 @@ export function isStripeConfigured(): boolean {
 }
 
 /**
+ * Simulated billing (entitlements applied without payment). Opt-in for local
+ * development only — never active in production builds.
+ */
+export function isBillingPreviewEnabled(): boolean {
+  return process.env.BILLING_PREVIEW_MODE === "true" && process.env.NODE_ENV !== "production";
+}
+
+/**
  * Get the shared Stripe client, or `null` when Stripe is not configured
  * (preview build / tests). Never throws.
  */

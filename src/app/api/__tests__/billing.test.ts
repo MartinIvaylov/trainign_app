@@ -1,105 +1,100 @@
-// Integration tests for the Phase 6 billing + sync surfaces:
-//   * POST /api/billing/checkout  (preview mode entitlement flow)
-//   * POST /api/billing/portal    (preview mode response)
-//   * GET/POST /api/sync          (write-through cache endpoint)
-//   * POST /api/webhooks/stripe   (event → Subscription table writes,
-//                                  idempotency, signature verification)
+// Integration tests for billing, sync and Stripe webhooks — focused on the
+// security properties from the audit (C2–C5):
+//   * every user-data route requires a session and ignores identities sent
+//     in the request body / query;
+//   * paid tiers are never granted without a verified Stripe event (preview
+//     billing only with an explicit dev flag);
+//   * webhooks are always signature-verified and never create users.
 //
 // Run with: `bun test src/app/api/__tests__/billing.test.ts`
-//
-// Emails and event ids are unique per run so assertions never collide with
-// rows left over from earlier runs against the dev SQLite database.
-import { describe, expect, it } from "bun:test";
-import { NextRequest } from "next/server";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 import { POST as checkoutPOST } from "@/app/api/billing/checkout/route";
 import { POST as portalPOST } from "@/app/api/billing/portal/route";
 import { GET as syncGET, POST as syncPOST } from "@/app/api/sync/route";
 import { POST as stripePOST } from "@/app/api/webhooks/stripe/route";
 import { db } from "@/lib/db";
+import { RUN, WEBHOOK_SECRET, createSessionUser, postJson, req, signedWebhook, withEnv } from "./helpers";
 
-const RUN = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-const email = `billing-${RUN}@example.com`;
+const CHECKOUT = "http://localhost:3000/api/billing/checkout";
+const PORTAL = "http://localhost:3000/api/billing/portal";
+const SYNC = "http://localhost:3000/api/sync";
 
-function makeRequest(url: string, init?: RequestInit): NextRequest {
-  return new NextRequest(url, init);
-}
-
-function postJson(url: string, body: unknown, headers: Record<string, string> = {}): NextRequest {
-  return makeRequest(url, {
-    method: "POST",
-    body: typeof body === "string" ? body : JSON.stringify(body),
-    headers: { "Content-Type": "application/json", ...headers },
-  });
-}
+const NO_STRIPE = { STRIPE_SECRET_KEY: undefined, STRIPE_WEBHOOK_SECRET: undefined };
+const PREVIEW = { ...NO_STRIPE, BILLING_PREVIEW_MODE: "true" };
 
 // ---------------------------------------------------------------------------
 // POST /api/billing/checkout
 // ---------------------------------------------------------------------------
 
 describe("POST /api/billing/checkout", () => {
-  it("returns 400 for invalid JSON", async () => {
-    const res = await checkoutPOST(postJson("http://localhost:3000/api/billing/checkout", "not json {{{"));
-    expect(res.status).toBe(400);
+  it("returns 401 without a session", async () => {
+    const res = await withEnv(PREVIEW, () => checkoutPOST(postJson(CHECKOUT, { tier: "pro" })));
+    expect(res.status).toBe(401);
   });
 
-  it("returns 400 for a missing or malformed email", async () => {
-    for (const bad of [undefined, "not-an-email", "a@"]) {
-      const res = await checkoutPOST(
-        postJson("http://localhost:3000/api/billing/checkout", { email: bad, tier: "pro" }),
-      );
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toContain("email");
-    }
-  });
-
-  it("returns 400 for an unknown tier", async () => {
+  it("returns 403 for a cross-origin request", async () => {
+    const u = await createSessionUser("xorigin");
     const res = await checkoutPOST(
-      postJson("http://localhost:3000/api/billing/checkout", { email, tier: "platinum" }),
+      postJson(CHECKOUT, { tier: "pro" }, { cookie: u.cookie, origin: "https://evil.example" }),
     );
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toContain("pro");
+    expect(res.status).toBe(403);
   });
 
-  it("applies a Pro entitlement in preview mode and writes the Subscription row", async () => {
-    const res = await checkoutPOST(
-      postJson("http://localhost:3000/api/billing/checkout", { email, tier: "pro" }),
+  it("returns 400 for invalid JSON and unknown tiers", async () => {
+    const u = await createSessionUser("checkout-bad");
+    const bad = await withEnv(PREVIEW, () => checkoutPOST(postJson(CHECKOUT, "nope {{", { cookie: u.cookie })));
+    expect(bad.status).toBe(400);
+    const unknown = await withEnv(PREVIEW, () =>
+      checkoutPOST(postJson(CHECKOUT, { tier: "platinum" }, { cookie: u.cookie })),
+    );
+    expect(unknown.status).toBe(400);
+  });
+
+  it("refuses to grant tiers without Stripe unless preview billing is explicitly enabled", async () => {
+    const u = await createSessionUser("checkout-nostripe");
+    const res = await withEnv({ ...NO_STRIPE, BILLING_PREVIEW_MODE: undefined }, () =>
+      checkoutPOST(postJson(CHECKOUT, { tier: "gym" }, { cookie: u.cookie })),
+    );
+    expect(res.status).toBe(503);
+    expect(await db.subscription.findUnique({ where: { userId: u.id } })).toBeNull();
+  });
+
+  it("never enables preview billing in production, even with the flag", async () => {
+    const u = await createSessionUser("checkout-prod");
+    const res = await withEnv({ ...PREVIEW, NODE_ENV: "production", AUTH_SECRET: "x".repeat(40) }, async () => {
+      // AUTH_SECRET changes the signing key, so mint the cookie inside.
+      const { createSessionToken, SESSION_COOKIE } = await import("@/lib/auth");
+      return checkoutPOST(
+        postJson(CHECKOUT, { tier: "gym" }, { cookie: `${SESSION_COOKIE}=${createSessionToken(u.id)}` }),
+      );
+    });
+    expect(res.status).toBe(503);
+    expect(await db.subscription.findUnique({ where: { userId: u.id } })).toBeNull();
+  });
+
+  it("applies the tier to the SESSION user in preview mode, ignoring any email in the body", async () => {
+    const attacker = await createSessionUser("attacker");
+    const victim = await createSessionUser("victim");
+    const res = await withEnv(PREVIEW, () =>
+      checkoutPOST(postJson(CHECKOUT, { tier: "pro", email: victim.email }, { cookie: attacker.cookie })),
     );
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.mode).toBe("preview");
     expect(data.tier).toBe("pro");
-    expect(data.status).toBe("active");
-    expect(data.processed).toBe(true);
-
-    // Verify the database row directly.
-    const user = await db.user.findUnique({
-      where: { email },
-      include: { subscription: true },
-    });
-    expect(user).not.toBeNull();
-    expect(user?.subscription?.tier).toBe("pro");
-    expect(user?.subscription?.status).toBe("active");
-    expect(user?.subscription?.provider).toBe("stripe_test");
+    expect((await db.subscription.findUnique({ where: { userId: attacker.id } }))?.tier).toBe("pro");
+    expect(await db.subscription.findUnique({ where: { userId: victim.id } })).toBeNull();
   });
 
-  it("downgrades to free in preview mode (tier free, status cancelled)", async () => {
-    const res = await checkoutPOST(
-      postJson("http://localhost:3000/api/billing/checkout", { email, tier: "free" }),
-    );
+  it("downgrades to free in preview mode", async () => {
+    const u = await createSessionUser("downgrade");
+    await withEnv(PREVIEW, () => checkoutPOST(postJson(CHECKOUT, { tier: "coach" }, { cookie: u.cookie })));
+    const res = await withEnv(PREVIEW, () => checkoutPOST(postJson(CHECKOUT, { tier: "free" }, { cookie: u.cookie })));
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.mode).toBe("preview");
     expect(data.tier).toBe("free");
-
-    const user = await db.user.findUnique({
-      where: { email },
-      include: { subscription: true },
-    });
-    expect(user?.subscription?.tier).toBe("free");
-    expect(user?.subscription?.status).toBe("cancelled");
+    expect((await db.subscription.findUnique({ where: { userId: u.id } }))?.status).toBe("cancelled");
   });
 });
 
@@ -108,26 +103,27 @@ describe("POST /api/billing/checkout", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /api/billing/portal", () => {
-  it("returns 400 for invalid JSON", async () => {
-    const res = await portalPOST(postJson("http://localhost:3000/api/billing/portal", "{{{"));
-    expect(res.status).toBe(400);
+  it("returns 401 without a session (an email in the body is not enough)", async () => {
+    const victim = await createSessionUser("portal-victim");
+    const res = await withEnv(PREVIEW, () => portalPOST(postJson(PORTAL, { email: victim.email })));
+    expect(res.status).toBe(401);
   });
 
-  it("returns 400 for a malformed email", async () => {
-    const res = await portalPOST(
-      postJson("http://localhost:3000/api/billing/portal", { email: "nope" }),
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it("returns preview mode (url null) without live Stripe credentials", async () => {
-    const res = await portalPOST(
-      postJson("http://localhost:3000/api/billing/portal", { email }),
-    );
+  it("returns preview mode (url null) for a signed-in user without Stripe", async () => {
+    const u = await createSessionUser("portal");
+    const res = await withEnv(PREVIEW, () => portalPOST(postJson(PORTAL, {}, { cookie: u.cookie })));
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.mode).toBe("preview");
     expect(data.url).toBeNull();
+  });
+
+  it("returns 404 in Stripe mode when the user has no Stripe subscription", async () => {
+    const u = await createSessionUser("portal-nosub");
+    const res = await withEnv({ STRIPE_SECRET_KEY: "sk_test_dummy_key" }, () =>
+      portalPOST(postJson(PORTAL, {}, { cookie: u.cookie })),
+    );
+    expect(res.status).toBe(404);
   });
 });
 
@@ -136,260 +132,241 @@ describe("POST /api/billing/portal", () => {
 // ---------------------------------------------------------------------------
 
 describe("/api/sync", () => {
-  const syncEmail = `sync-${RUN}@example.com`;
+  it("GET and POST return 401 without a session", async () => {
+    const victim = await createSessionUser("sync-victim");
+    expect((await syncGET(req(`${SYNC}?email=${encodeURIComponent(victim.email)}`))).status).toBe(401);
+    const push = await syncPOST(
+      postJson(SYNC, { email: victim.email, revision: new Date().toISOString(), state: { onboarded: true } }),
+    );
+    expect(push.status).toBe(401);
+  });
 
-  it("POST returns 400 for invalid JSON", async () => {
-    const res = await syncPOST(postJson("http://localhost:3000/api/sync", "not json"));
+  it("returns 400 for invalid JSON / revision / state", async () => {
+    const u = await createSessionUser("sync-bad");
+    expect((await syncPOST(postJson(SYNC, "nope {{", { cookie: u.cookie }))).status).toBe(400);
+    for (const body of [
+      { revision: "not-a-date", state: {} },
+      { revision: new Date().toISOString(), state: "string" },
+      { revision: new Date().toISOString(), state: [1, 2] },
+    ]) {
+      expect((await syncPOST(postJson(SYNC, body, { cookie: u.cookie }))).status).toBe(400);
+    }
+  });
+
+  it("rejects revisions far in the future (snapshot-locking attack)", async () => {
+    const u = await createSessionUser("sync-future");
+    const revision = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+    const res = await syncPOST(postJson(SYNC, { revision, state: { onboarded: true } }, { cookie: u.cookie }));
     expect(res.status).toBe(400);
   });
 
-  it("POST returns 400 for a malformed email / revision / state", async () => {
-    const base = "http://localhost:3000/api/sync";
-    const bad1 = await syncPOST(postJson(base, { email: "bad", revision: "2026-01-01T00:00:00Z", state: {} }));
-    const bad2 = await syncPOST(postJson(base, { email: syncEmail, revision: "not-a-date", state: {} }));
-    const bad3 = await syncPOST(postJson(base, { email: syncEmail, revision: "2026-01-01T00:00:00Z", state: [1, 2] }));
-    expect(bad1.status).toBe(400);
-    expect(bad2.status).toBe(400);
-    expect(bad3.status).toBe(400);
+  it("round-trips the session user's snapshot and strips identity/tier fields", async () => {
+    const u = await createSessionUser("sync-rt");
+    const revision = new Date().toISOString();
+    const state = {
+      onboarded: true,
+      activeMode: "crossfit",
+      logs: [{ id: "l1" }],
+      // Must never be stored or returned:
+      authed: true,
+      email: "someone-else@example.com",
+      tier: "gym",
+      signOut: "boom",
+    };
+    const push = await syncPOST(postJson(SYNC, { revision, state }, { cookie: u.cookie }));
+    expect(push.status).toBe(200);
+    expect((await push.json()).ok).toBe(true);
+
+    const pull = await syncGET(req(SYNC, { headers: { cookie: u.cookie } }));
+    const data = await pull.json();
+    expect(data.revision).toBe(revision);
+    expect(data.state).toEqual({ onboarded: true, activeMode: "crossfit", logs: [{ id: "l1" }] });
   });
 
-  it("round-trips a snapshot: POST then GET returns the state", async () => {
-    const state = { onboarded: true, activeMode: "hyrox", sessions: [{ id: "s1" }], tier: "free" };
-    const push = await syncPOST(
-      postJson("http://localhost:3000/api/sync", {
-        email: syncEmail,
-        revision: "2026-11-23T10:00:00.000Z",
-        state,
-      }),
-    );
-    expect(push.status).toBe(200);
-    const pushData = await push.json();
-    expect(pushData.ok).toBe(true);
+  it("isolates users: one account can neither read nor overwrite another's snapshot", async () => {
+    const a = await createSessionUser("sync-a");
+    const b = await createSessionUser("sync-b");
+    await syncPOST(postJson(SYNC, { revision: new Date().toISOString(), state: { activeMode: "hyrox" } }, { cookie: a.cookie }));
 
-    const pull = await syncGET(makeRequest(`http://localhost:3000/api/sync?email=${syncEmail}`));
-    expect(pull.status).toBe(200);
-    const pullData = await pull.json();
-    expect(pullData.revision).toBe("2026-11-23T10:00:00.000Z");
-    expect(pullData.state).toEqual(state);
+    // B asks for A's data by email and pushes with A's email in the body.
+    const readAttempt = await syncGET(req(`${SYNC}?email=${encodeURIComponent(a.email)}`, { headers: { cookie: b.cookie } }));
+    expect((await readAttempt.json()).state).toBeNull();
+    await syncPOST(
+      postJson(SYNC, { email: a.email, revision: new Date().toISOString(), state: { activeMode: "athx" } }, { cookie: b.cookie }),
+    );
+
+    const aData = await (await syncGET(req(SYNC, { headers: { cookie: a.cookie } }))).json();
+    expect(aData.state.activeMode).toBe("hyrox");
   });
 
   it("rejects a stale push with conflict (last write wins)", async () => {
-    const res = await syncPOST(
-      postJson("http://localhost:3000/api/sync", {
-        email: syncEmail,
-        revision: "2026-11-23T09:00:00.000Z", // older than the pushed 10:00
-        state: { onboarded: false },
-      }),
-    );
-    expect(res.status).toBe(200);
+    const u = await createSessionUser("sync-stale");
+    const newer = new Date().toISOString();
+    const older = new Date(Date.now() - 60_000).toISOString();
+    await syncPOST(postJson(SYNC, { revision: newer, state: { activeMode: "athx" } }, { cookie: u.cookie }));
+    const res = await syncPOST(postJson(SYNC, { revision: older, state: { activeMode: "hyrox" } }, { cookie: u.cookie }));
     const data = await res.json();
-    expect(data.ok).toBe(false);
     expect(data.conflict).toBe(true);
-
-    // The stored snapshot is unchanged.
-    const pull = await syncGET(makeRequest(`http://localhost:3000/api/sync?email=${syncEmail}`));
-    const pullData = await pull.json();
-    expect(pullData.state.onboarded).toBe(true);
+    expect(data.revision).toBe(newer);
   });
 
-  it("GET returns revision null for an unknown email", async () => {
-    const pull = await syncGET(
-      makeRequest(`http://localhost:3000/api/sync?email=unknown-${RUN}@example.com`),
-    );
-    expect(pull.status).toBe(200);
-    const data = await pull.json();
+  it("GET returns revision null when nothing is stored", async () => {
+    const u = await createSessionUser("sync-empty");
+    const data = await (await syncGET(req(SYNC, { headers: { cookie: u.cookie } }))).json();
     expect(data.revision).toBeNull();
     expect(data.state).toBeNull();
   });
 
-  it("GET returns 400 without a valid email param", async () => {
-    const res = await syncGET(makeRequest("http://localhost:3000/api/sync"));
-    expect(res.status).toBe(400);
-  });
-
-  it("POST rejects a state payload over the 1.5 MB cap with 413", async () => {
-    const big = { blob: "x".repeat(1_600_000) };
+  it("rejects a state payload over the 1.5 MB cap with 413", async () => {
+    const u = await createSessionUser("sync-big");
     const res = await syncPOST(
-      postJson("http://localhost:3000/api/sync", {
-        email: syncEmail,
-        revision: "2026-11-23T11:00:00.000Z",
-        state: big,
-      }),
+      postJson(SYNC, { revision: new Date().toISOString(), state: { logs: ["x".repeat(1_600_000)] } }, { cookie: u.cookie }),
     );
     expect(res.status).toBe(413);
   });
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/webhooks/stripe — database writes + idempotency
+// POST /api/webhooks/stripe
 // ---------------------------------------------------------------------------
 
-describe("POST /api/webhooks/stripe (entitlement writes)", () => {
-  const whSecretBackup = process.env.STRIPE_WEBHOOK_SECRET;
-  const keyBackup = process.env.STRIPE_SECRET_KEY;
-  const whEmail = `webhook-${RUN}@example.com`;
+describe("POST /api/webhooks/stripe", () => {
+  const STRIPE_ENV = { STRIPE_SECRET_KEY: "sk_test_dummy_key", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET };
   let evtCounter = 0;
+  let user: { id: string; email: string };
 
-  function webhookEvent(type: string, object: Record<string, unknown>) {
+  function event(type: string, object: Record<string, unknown>) {
     evtCounter += 1;
-    return {
-      id: `evt_${RUN}_${evtCounter}`,
-      type,
-      data: { object },
-    };
+    return { id: `evt_${RUN}_${evtCounter}`, type, data: { object } };
   }
+  const send = (e: unknown) => withEnv(STRIPE_ENV, async () => stripePOST(await signedWebhook(e)));
 
-  function post(event: unknown) {
-    return stripePOST(
-      postJson("http://localhost:3000/api/webhooks/stripe", event, {
-        "stripe-signature": "t=1,v1=preview",
-      }),
+  beforeAll(async () => {
+    user = await createSessionUser("webhook");
+  });
+
+  it("returns 401 without a stripe-signature header", async () => {
+    const res = await withEnv(STRIPE_ENV, () =>
+      stripePOST(postJson("http://localhost:3000/api/webhooks/stripe", { type: "checkout.session.completed" })),
     );
-  }
+    expect(res.status).toBe(401);
+  });
 
-  it("checkout.session.completed creates an active pro subscription", async () => {
-    process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
-    delete process.env.STRIPE_SECRET_KEY; // preview mode — trust parsed JSON
+  it("returns 503 and writes nothing when Stripe keys are not configured (no unverified mode)", async () => {
+    const forged = event("checkout.session.completed", {
+      metadata: { user_id: user.id, price_id: "price_gym" },
+    });
+    for (const env of [
+      { STRIPE_SECRET_KEY: undefined, STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET },
+      { STRIPE_SECRET_KEY: "sk_test_dummy_key", STRIPE_WEBHOOK_SECRET: undefined },
+    ]) {
+      const res = await withEnv(env, async () => stripePOST(await signedWebhook(forged)));
+      expect(res.status).toBe(503);
+    }
+    expect(await db.subscription.findUnique({ where: { userId: user.id } })).toBeNull();
+  });
 
-    const res = await post(
-      webhookEvent("checkout.session.completed", {
+  it("rejects forged or wrongly signed events with 400", async () => {
+    const forged = event("checkout.session.completed", { metadata: { user_id: user.id, price_id: "price_gym" } });
+    const unsigned = await withEnv(STRIPE_ENV, () =>
+      stripePOST(postJson("http://localhost:3000/api/webhooks/stripe", forged, { "stripe-signature": "t=1,v1=fake" })),
+    );
+    expect(unsigned.status).toBe(400);
+    const wrongKey = await withEnv(STRIPE_ENV, async () => stripePOST(await signedWebhook(forged, "whsec_attacker")));
+    expect(wrongKey.status).toBe(400);
+    expect(await db.subscription.findUnique({ where: { userId: user.id } })).toBeNull();
+  });
+
+  it("does not create users for unknown emails / ids", async () => {
+    const ghost = `ghost-${RUN}@example.com`;
+    const res = await send(
+      event("checkout.session.completed", { metadata: { email: ghost, user_id: "nope", price_id: "price_pro_monthly" } }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).processed).toBe(false);
+    expect(await db.user.findUnique({ where: { email: ghost } })).toBeNull();
+  });
+
+  it("checkout.session.completed activates the tier for metadata.user_id", async () => {
+    const res = await send(
+      event("checkout.session.completed", {
         id: `cs_${RUN}`,
         subscription: `sub_${RUN}`,
-        metadata: { email: whEmail, price_id: "price_pro_monthly" },
+        client_reference_id: user.id,
+        metadata: { user_id: user.id, price_id: "price_pro_monthly" },
       }),
     );
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.processed).toBe(true);
     expect(data.tier).toBe("pro");
-
-    const user = await db.user.findUnique({
-      where: { email: whEmail },
-      include: { subscription: true },
-    });
-    expect(user?.subscription?.tier).toBe("pro");
-    expect(user?.subscription?.status).toBe("active");
-    expect(user?.subscription?.provider).toBe("stripe");
-    expect(user?.subscription?.providerRef).toBe(`sub_${RUN}`);
+    const sub = await db.subscription.findUnique({ where: { userId: user.id } });
+    expect(sub?.tier).toBe("pro");
+    expect(sub?.provider).toBe("stripe");
+    expect(sub?.providerRef).toBe(`sub_${RUN}`);
   });
 
   it("replays the same event id without re-applying (idempotency)", async () => {
-    // 1. First delivery: coach tier.
-    const event = webhookEvent("checkout.session.completed", {
-      metadata: { email: whEmail, price_id: "price_coach" },
+    const original = event("customer.subscription.updated", {
+      id: `sub_${RUN}`,
+      status: "active",
+      items: { data: [{ price: { id: "price_coach" } }] },
     });
-    const first = await post(event);
-    expect(first.status).toBe(200);
-    expect((await first.json()).processed).toBe(true);
-
-    // 2. A later event moves the tier to pro_annual.
-    const update = await post(
-      webhookEvent("customer.subscription.updated", {
-        id: `sub_between_${RUN}`,
+    expect((await (await send(original)).json()).processed).toBe(true);
+    await send(
+      event("customer.subscription.updated", {
+        id: `sub_${RUN}`,
         status: "active",
-        metadata: { email: whEmail },
         items: { data: [{ price: { id: "price_pro_annual" } }] },
       }),
     );
-    expect((await update.json()).processed).toBe(true);
-
-    // 3. Stripe retries the ORIGINAL event (same id). It must be skipped —
-    //    if it were re-processed it would clobber the tier back to coach.
-    const second = await post(event);
-    expect(second.status).toBe(200);
-    const data = await second.json();
-    expect(data.duplicate).toBe(true);
-    expect(data.processed).toBe(false);
-
-    const user = await db.user.findUnique({
-      where: { email: whEmail },
-      include: { subscription: true },
-    });
-    expect(user?.subscription?.tier).toBe("pro_annual"); // replay did NOT win
-    expect(
-      await db.webhookEvent.count({ where: { externalId: (event as { id: string }).id } }),
-    ).toBe(1);
+    const replay = await (await send(original)).json();
+    expect(replay.duplicate).toBe(true);
+    expect((await db.subscription.findUnique({ where: { userId: user.id } }))?.tier).toBe("pro_annual");
   });
 
-  it("customer.subscription.updated changes the tier and period end", async () => {
-    const periodEnd = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
-    const res = await post(
-      webhookEvent("customer.subscription.updated", {
-        id: `sub_upd_${RUN}`,
+  it("customer.subscription.updated resolves the user via the stored subscription id and sets period end", async () => {
+    const periodEnd = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+    const res = await send(
+      event("customer.subscription.updated", {
+        id: `sub_${RUN}`,
         status: "active",
-        current_period_end: periodEnd,
-        metadata: { email: whEmail },
-        items: { data: [{ price: { id: "price_pro_annual" } }] },
+        items: { data: [{ price: { id: "price_pro_annual" }, current_period_end: periodEnd }] },
       }),
     );
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.processed).toBe(true);
-    expect(data.tier).toBe("pro_annual");
-
-    const user = await db.user.findUnique({
-      where: { email: whEmail },
-      include: { subscription: true },
-    });
-    expect(user?.subscription?.tier).toBe("pro_annual");
-    expect(user?.subscription?.currentPeriodEnd).not.toBeNull();
+    expect((await res.json()).tier).toBe("pro_annual");
+    const sub = await db.subscription.findUnique({ where: { userId: user.id } });
+    expect(sub?.currentPeriodEnd?.getTime()).toBe(periodEnd * 1000);
   });
 
-  it("invoice.payment_failed marks the subscription past_due without changing tier", async () => {
-    const res = await post(
-      webhookEvent("invoice.payment_failed", {
+  it("invoice.payment_failed marks past_due without changing tier", async () => {
+    const res = await send(
+      event("invoice.payment_failed", {
         id: `in_${RUN}`,
-        subscription: `sub_upd_${RUN}`,
-        metadata: { email: whEmail },
+        parent: { subscription_details: { subscription: `sub_${RUN}` } },
       }),
     );
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.processed).toBe(true);
-
-    const user = await db.user.findUnique({
-      where: { email: whEmail },
-      include: { subscription: true },
-    });
-    expect(user?.subscription?.status).toBe("past_due");
-    expect(user?.subscription?.tier).toBe("pro_annual"); // unchanged
+    expect((await res.json()).processed).toBe(true);
+    const sub = await db.subscription.findUnique({ where: { userId: user.id } });
+    expect(sub?.status).toBe("past_due");
+    expect(sub?.tier).toBe("pro_annual");
   });
 
   it("customer.subscription.deleted downgrades to free", async () => {
-    const res = await post(
-      webhookEvent("customer.subscription.deleted", {
-        id: `sub_del_${RUN}`,
-        metadata: { email: whEmail },
-      }),
-    );
+    const res = await send(event("customer.subscription.deleted", { id: `sub_${RUN}` }));
+    expect((await res.json()).tier).toBe("free");
+    const sub = await db.subscription.findUnique({ where: { userId: user.id } });
+    expect(sub?.tier).toBe("free");
+    expect(sub?.status).toBe("cancelled");
+  });
+
+  it("acknowledges unhandled event types without processing", async () => {
+    const res = await send(event("some.other.event", {}));
     expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.processed).toBe(true);
-    expect(data.tier).toBe("free");
-
-    const user = await db.user.findUnique({
-      where: { email: whEmail },
-      include: { subscription: true },
-    });
-    expect(user?.subscription?.tier).toBe("free");
-    expect(user?.subscription?.status).toBe("cancelled");
+    expect((await res.json()).processed).toBe(false);
   });
+});
 
-  it("returns 400 with a bad signature when STRIPE_SECRET_KEY is configured", async () => {
-    process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
-    process.env.STRIPE_SECRET_KEY = "sk_test_dummy_key"; // enables verification
-    try {
-      const res = await post(
-        webhookEvent("checkout.session.completed", {
-          metadata: { email: whEmail, price_id: "price_pro_monthly" },
-        }),
-      );
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toContain("Signature verification failed");
-    } finally {
-      process.env.STRIPE_SECRET_KEY = keyBackup;
-      process.env.STRIPE_WEBHOOK_SECRET = whSecretBackup;
-    }
-  });
+afterAll(async () => {
+  await db.$disconnect();
 });

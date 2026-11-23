@@ -48,7 +48,6 @@ const PRICING = [
 
 export function LandingPage() {
   const setView = useApp((s) => s.setView);
-  const setTier = useApp((s) => s.setTier);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -388,10 +387,9 @@ export function LandingPage() {
                   ))}
                 </ul>
                 <button
-                  onClick={() => {
-                    setTier(p.tier);
-                    setView("auth");
-                  }}
+                  // Plans are purchased after sign-up (Settings → Subscription);
+                  // the tier is only ever granted by the server.
+                  onClick={() => setView("auth")}
                   className={`mt-5 w-full py-2.5 rounded-md font-semibold text-sm transition ${
                     p.highlight
                       ? "bg-primary text-primary-foreground hover:opacity-90"

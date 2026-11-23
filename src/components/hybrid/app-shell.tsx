@@ -1,6 +1,7 @@
 "use client";
 
 import { useApp } from "@/store/app-store";
+import { signOut } from "@/lib/session";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutDashboard, CalendarDays, Dumbbell, Trophy, BarChart3,
@@ -41,7 +42,6 @@ const SECONDARY_NAV = [
 export function AppShell() {
   const appView = useApp((s) => s.appView);
   const setAppView = useApp((s) => s.setAppView);
-  const signOut = useApp((s) => s.signOut);
   const activeMode = useApp((s) => s.activeMode);
   const profile = useApp((s) => s.profile);
   const upcoming = useApp((s) => s.upcomingCompetition);
@@ -111,7 +111,7 @@ export function AppShell() {
             </div>
           </div>
           <button
-            onClick={signOut}
+            onClick={() => void signOut()}
             className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
           >
             <LogOut className="w-4 h-4" /> Sign out

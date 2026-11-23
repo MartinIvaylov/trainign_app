@@ -177,7 +177,7 @@ export function SettingsView() {
       const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, tier: t.id }),
+        body: JSON.stringify({ tier: t.id }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         mode?: string;
@@ -226,7 +226,7 @@ export function SettingsView() {
       const res = await fetch("/api/billing/portal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({}),
       });
       const data = (await res.json().catch(() => ({}))) as {
         mode?: string;

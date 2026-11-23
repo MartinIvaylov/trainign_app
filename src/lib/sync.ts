@@ -25,7 +25,8 @@
 // does not echo it back to the server.
 // =============================================================================
 
-import { useApp, snapshotState, type PersistedState } from "@/store/app-store";
+import { useApp, syncedState, type SyncedState } from "@/store/app-store";
+import { pickSynced } from "@/lib/sync-keys";
 
 const REVISION_KEY = "hybrid-sync-local-revision";
 const PUSH_DEBOUNCE_MS = 2_000;
@@ -73,8 +74,8 @@ function writeStoredRevision(ms: number): void {
   }
 }
 
-function sliceOf(state: ReturnType<typeof useApp.getState>): PersistedState {
-  return snapshotState(state);
+function sliceOf(state: ReturnType<typeof useApp.getState>): SyncedState {
+  return syncedState(state);
 }
 
 async function fetchJson(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: any }> {
@@ -105,11 +106,16 @@ async function pushNow(): Promise<void> {
   const res = await fetchJson("/api/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, revision, state }),
+    body: JSON.stringify({ revision, state }),
   });
 
   // Signed out / switched accounts mid-flight — drop the push.
   if (currentEmail !== email) return;
+
+  if (res.status === 401) {
+    handleSessionExpired();
+    return;
+  }
 
   if (res.ok && res.data?.ok) {
     retryCount = 0;
@@ -152,8 +158,12 @@ async function pullAndReconcile(): Promise<void> {
   if (!currentEmail) return;
   const email = currentEmail;
 
-  const res = await fetchJson(`/api/sync?email=${encodeURIComponent(email)}`);
+  const res = await fetchJson("/api/sync", { cache: "no-store" });
   if (currentEmail !== email) return;
+  if (res.status === 401) {
+    handleSessionExpired();
+    return;
+  }
 
   if (!res.ok) return; // offline / 503 — localStorage stays authoritative
   lastPullAt = Date.now();
@@ -165,7 +175,9 @@ async function pullAndReconcile(): Promise<void> {
   if (serverRevisionMs > localRevision && res.data?.state && typeof res.data.state === "object") {
     // Server is newer — hydrate the local store from the snapshot.
     suppressEcho = true;
-    useApp.setState(res.data.state as Partial<ReturnType<typeof useApp.getState>>);
+    // Only whitelisted data keys — a snapshot can never change identity,
+    // tier, navigation or store actions.
+    useApp.setState(pickSynced(res.data.state) as Partial<ReturnType<typeof useApp.getState>>);
     localRevision = serverRevisionMs;
     writeStoredRevision(localRevision);
     baselineSlice = JSON.stringify(sliceOf(useApp.getState()));
@@ -190,7 +202,7 @@ function ensureSubscribed(): void {
   baselineSlice = JSON.stringify(sliceOf(useApp.getState()));
 
   useApp.subscribe((state) => {
-    if (!currentEmail) return;
+    if (!currentEmail || !state.authed || state.email !== currentEmail) return;
     if (suppressEcho) {
       suppressEcho = false;
       baselineSlice = JSON.stringify(sliceOf(state));
@@ -243,6 +255,31 @@ export async function initSync(email: string): Promise<void> {
 
   ensureSubscribed();
   await pullAndReconcile();
+}
+
+/** Stop syncing (sign-out / expired session) and forget this device's revision. */
+export function stopSync(): void {
+  currentEmail = null;
+  if (pushTimer) clearTimeout(pushTimer);
+  if (retryTimer) clearTimeout(retryTimer);
+  pushTimer = null;
+  retryTimer = null;
+  retryCount = 0;
+  localRevision = 0;
+  try {
+    window.localStorage.removeItem(REVISION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function handleSessionExpired(): void {
+  stopSync();
+  const store = useApp.getState();
+  if (store.authed) {
+    store.signOut();
+    store.pushToast({ kind: "warning", title: "Signed out", body: "Your session expired. Please sign in again." });
+  }
 }
 
 /** Readable sync status for UI surfaces (settings, diagnostics). */

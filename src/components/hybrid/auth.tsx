@@ -2,29 +2,36 @@
 
 import { useState } from "react";
 import { useApp } from "@/store/app-store";
+import { authenticate } from "@/lib/session";
 import { motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, Mail, Lock, User } from "lucide-react";
 
 type Mode = "signin" | "signup";
 
 export function AuthScreen() {
-  const setAuthed = useApp((s) => s.setAuthed);
   const setView = useApp((s) => s.setView);
   const [mode, setMode] = useState<Mode>("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email || !password) return;
+    if (!email || !password || loading) return;
+    if (mode === "signup" && password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    setError(null);
     setLoading(true);
-    // Mock auth — production wires to Supabase Auth.
-    setTimeout(() => {
-      setAuthed(true, email);
-      setLoading(false);
-    }, 600);
+    const result = await authenticate(mode, { email, password, name: name || undefined });
+    setLoading(false);
+    if (!result.ok) {
+      setError(result.error);
+      setPassword("");
+    }
   }
 
   return (
@@ -112,6 +119,7 @@ export function AuthScreen() {
             <Field icon={Mail} label="Email">
               <input
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
@@ -124,11 +132,20 @@ export function AuthScreen() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder={mode === "signup" ? "At least 8 characters" : "••••••••"}
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                minLength={mode === "signup" ? 8 : undefined}
+                maxLength={200}
                 required
                 className="w-full bg-transparent outline-none text-sm"
               />
             </Field>
+
+            {error && (
+              <div role="alert" className="text-sm text-destructive border border-destructive/40 bg-destructive/10 rounded-md px-3 py-2">
+                {error}
+              </div>
+            )}
 
             <button
               type="submit"
@@ -143,16 +160,16 @@ export function AuthScreen() {
           <div className="mt-6 text-center text-sm text-muted-foreground">
             {mode === "signup" ? "Already have an account?" : "New to HYBRID?"}{" "}
             <button
-              onClick={() => setMode(mode === "signup" ? "signin" : "signup")}
+              onClick={() => {
+                setMode(mode === "signup" ? "signin" : "signup");
+                setError(null);
+              }}
               className="text-foreground font-medium hover:underline"
             >
               {mode === "signup" ? "Sign in" : "Create account"}
             </button>
           </div>
 
-          <div className="mt-6 text-xs text-muted-foreground text-center">
-            Demo build — auth is mocked locally. Production wires to Supabase Auth.
-          </div>
         </motion.div>
       </div>
     </div>

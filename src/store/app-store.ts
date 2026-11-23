@@ -14,6 +14,7 @@ import {
   WorkoutLogLite,
 } from "@/types";
 import { v4 as uuid } from "uuid";
+import { SYNCED_KEYS } from "@/lib/sync-keys";
 
 type View =
   | "landing"
@@ -150,6 +151,9 @@ interface AppState {
   authed: boolean;
   email: string | null;
   setAuthed: (a: boolean, email?: string | null) => void;
+  /** Apply the server-verified session (from /api/auth/*). */
+  applySession: (session: { email: string; tier: AppState["tier"] }) => void;
+  /** Clear the session AND this account's local data (shared-device safety). */
   signOut: () => void;
 
   // --- onboarding & profile
@@ -214,6 +218,8 @@ interface AppState {
   dismissToast: (id: string) => void;
 
   // --- subscription
+  // Display cache of the server entitlement. Only ever set from server
+  // responses (/api/auth/me, /api/billing/checkout) — never from a click.
   tier: "free" | "pro" | "pro_annual" | "coach" | "gym";
   setTier: (t: AppState["tier"]) => void;
 
@@ -227,31 +233,23 @@ interface AppState {
 // see src/lib/sync.ts). Both consumers build their snapshot from this list.
 // ----------------------------------------------------------------------------
 
-export const PERSISTED_KEYS = [
-  "authed",
-  "email",
-  "onboarded",
-  "profile",
-  "preferences",
-  "benchmarks",
-  "activeMode",
-  "activeGoal",
-  "upcomingCompetition",
-  "sessions",
-  "logs",
-  "prs",
-  "hyroxSimulations",
-  "raceResults",
-  "coachAthletes",
-  "coachWorkouts",
-  "checkins",
-  "recommendations",
-  "tier",
-] as const;
+// `authed` / `email` / `tier` are a local display cache only; they are
+// re-verified against the session cookie on every app start (SyncManager)
+// and are never part of the server snapshot (see SYNCED_KEYS).
+export const PERSISTED_KEYS = ["authed", "email", "tier", ...SYNCED_KEYS] as const;
 
 export type PersistedState = Pick<AppState, (typeof PERSISTED_KEYS)[number]>;
 
-/** Extract the persisted/syncable slice from the full store state. */
+export type SyncedState = Pick<AppState, (typeof SYNCED_KEYS)[number]>;
+
+/** Extract the slice mirrored to the server (no identity / tier fields). */
+export function syncedState(s: AppState): SyncedState {
+  const out = {} as Record<string, unknown>;
+  for (const key of SYNCED_KEYS) out[key] = s[key];
+  return out as SyncedState;
+}
+
+/** Extract the persisted (localStorage) slice from the full store state. */
 export function snapshotState(s: AppState): PersistedState {
   const out = {} as Record<string, unknown>;
   for (const key of PERSISTED_KEYS) {
@@ -271,13 +269,13 @@ export const useApp = create<AppState>()(
       authed: false,
       email: null,
       setAuthed: (a, email = null) => set({ authed: a, email }),
-      signOut: () =>
-        set({
-          authed: false,
-          email: null,
-          view: "landing",
-          appView: "dashboard",
-        }),
+      applySession: ({ email, tier }) => set({ authed: true, email, tier }),
+      signOut: () => {
+        // Drop identity first so the sync subscription never mirrors the
+        // reset (empty) state to the account that is signing out.
+        set({ authed: false, email: null, view: "landing", appView: "dashboard" });
+        get().resetAll();
+      },
 
       onboarded: false,
       profile: null,

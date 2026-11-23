@@ -2,41 +2,35 @@
 // HYBRID Performance Platform — Stripe webhook handler
 // =============================================================================
 //
-// Full implementation (Stripe SDK installed):
-//
-//   1. When `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` are configured, the
-//      raw body is verified with `stripe.webhooks.constructEvent` — the only
-//      safe way to trust a webhook (401/400 on missing/invalid signature).
-//   2. Idempotency: the event id is claimed in the `WebhookEvent` table before
-//      processing. Replayed events (Stripe retries) are acknowledged with 200
-//      and skipped — the entitlement is never double-applied.
-//   3. Entitlements: each event maps to an upsert on the `Subscription` table
-//      via `applyEntitlement()` (see `src/lib/entitlements.ts`):
+//   1. Every event is cryptographically verified with
+//      `stripe.webhooks.constructEventAsync` against `STRIPE_WEBHOOK_SECRET`.
+//      There is NO unverified mode: without both `STRIPE_SECRET_KEY` and
+//      `STRIPE_WEBHOOK_SECRET` the endpoint answers 503 and writes nothing.
+//   2. Idempotency: the event id is claimed in `WebhookEvent` before
+//      processing; replays are acknowledged and skipped. If applying the
+//      entitlement fails because the DB is down, the claim is released and a
+//      500 is returned so Stripe retries.
+//   3. Entitlements (via `applyEntitlement()`), resolved by Stripe metadata
+//      `user_id` / `client_reference_id`, then by the stored subscription id.
+//      Webhooks never create user rows.
 //        checkout.session.completed        → activate tier
 //        customer.subscription.updated     → update tier / status / period end
 //        customer.subscription.deleted     → downgrade to free, cancelled
 //        invoice.payment_failed            → mark past_due (tier unchanged)
-//
-// Preview mode (no `STRIPE_SECRET_KEY`, e.g. this sandbox / local dev):
-// the signature header must be present and `STRIPE_WEBHOOK_SECRET` set, but
-// the payload is trusted as-is so the full event → database flow can be
-// exercised end-to-end without live Stripe credentials. Signature-only trust
-// is gated on the absence of a real secret key, so production always verifies
-// cryptographically.
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { getStripe, isStripeConfigured, tierFromPrice, type Tier } from "@/lib/stripe";
-import { applyEntitlement, claimWebhookEvent } from "@/lib/entitlements";
+import { getStripe, tierFromPrice, type Tier } from "@/lib/stripe";
+import { applyEntitlement, claimWebhookEvent, releaseWebhookEvent } from "@/lib/entitlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Minimal shape of the events we inspect. Real Stripe events are far richer;
-// these interfaces keep the handler decoupled from the SDK types so preview
-// mode (plain JSON) and production (verified events) share one code path.
+// these interfaces keep the handler decoupled from the SDK's typings.
 interface StripeItem {
   price?: { id?: string } | null;
+  current_period_end?: number;
 }
 
 interface StripeSubscriptionObject {
@@ -60,7 +54,7 @@ interface StripeInvoiceObject {
   id?: string;
   customer?: string;
   subscription?: string;
-  parent?: { subscription_item?: string | null };
+  parent?: { subscription_details?: { subscription?: string | null } | null } | null;
   lines?: { data?: StripeItem[] };
   metadata?: Record<string, string | undefined>;
 }
@@ -182,14 +176,15 @@ function processSubscriptionUpdated(event: ScaffoldStripeEvent): PendingEntitlem
   const priceId = extractPriceId(obj);
   const tier = priceId ? tierFromPrice(priceId) : null;
   const status = mapStatus(obj.status) ?? "active";
-  if (!userId && !email) return null;
+  if (!userId && !email && !obj.id) return null; // resolved via stored subscription id
   return {
     userId,
     email,
     tier: tier ?? undefined,
     status,
     providerRef: obj.id ?? null,
-    currentPeriodEnd: toDate(obj.current_period_end) ?? undefined,
+    // Newer Stripe API versions report the period end per subscription item.
+    currentPeriodEnd: toDate(obj.current_period_end ?? obj.items?.data?.[0]?.current_period_end) ?? undefined,
   };
 }
 
@@ -197,7 +192,7 @@ function processSubscriptionDeleted(event: ScaffoldStripeEvent): PendingEntitlem
   const obj = event.data?.object as StripeSubscriptionObject | undefined;
   if (!obj) return null;
   const { userId, email } = extractUserRef(obj);
-  if (!userId && !email) return null;
+  if (!userId && !email && !obj.id) return null; // resolved via stored subscription id
   return {
     userId,
     email,
@@ -211,13 +206,14 @@ function processInvoicePaymentFailed(event: ScaffoldStripeEvent): PendingEntitle
   const obj = event.data?.object as StripeInvoiceObject | undefined;
   if (!obj) return null;
   const { userId, email } = extractUserRef(obj);
-  if (!userId && !email) return null;
+  const subscriptionRef = obj.subscription ?? obj.parent?.subscription_details?.subscription ?? null;
+  if (!userId && !email && !subscriptionRef) return null;
   return {
     userId,
     email,
     // No tier: `applyEntitlement` keeps the existing tier on update.
     status: "past_due",
-    providerRef: obj.subscription ?? null,
+    providerRef: subscriptionRef,
   };
 }
 
@@ -226,113 +222,79 @@ function processInvoicePaymentFailed(event: ScaffoldStripeEvent): PendingEntitle
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
+  // 1. Raw body — signature verification needs the original bytes.
+  const rawBody = await req.text();
+
+  const signature = req.headers.get("stripe-signature");
+  if (!signature) {
+    return NextResponse.json({ error: "Missing stripe-signature header" }, { status: 401 });
+  }
+
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const stripe = getStripe();
+  if (!webhookSecret || !stripe) {
+    console.error("[stripe-webhook] STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET not configured");
+    return NextResponse.json({ error: "Webhooks are not configured" }, { status: 503 });
+  }
+
+  // 2. Verify + parse.
+  let event: ScaffoldStripeEvent;
   try {
-    // 1. Read the raw body — signature verification needs the original bytes.
-    const rawBody = await req.text();
+    // Async variant: works on both Node crypto and WebCrypto (Bun / edge
+    // runtimes, where the synchronous verifier throws).
+    event = (await stripe.webhooks.constructEventAsync(rawBody, signature, webhookSecret)) as unknown as ScaffoldStripeEvent;
+  } catch {
+    return NextResponse.json({ error: "Signature verification failed" }, { status: 400 });
+  }
 
-    // 2. A stripe-signature header is always required.
-    const signature = req.headers.get("stripe-signature");
-    if (!signature || signature.length === 0) {
-      return NextResponse.json(
-        { error: "Missing stripe-signature header" },
-        { status: 401 },
-      );
-    }
+  const type = event.type ?? "unknown";
 
-    if (!process.env.STRIPE_WEBHOOK_SECRET) {
-      return NextResponse.json(
-        { error: "STRIPE_WEBHOOK_SECRET is not configured" },
-        { status: 500 },
-      );
-    }
-
-    // 3. Verify + parse the event.
-    //    Production (STRIPE_SECRET_KEY set): cryptographically verified via
-    //    the SDK. Preview mode: JSON-parsed and trusted (see file header).
-    let event: ScaffoldStripeEvent;
-    if (isStripeConfigured()) {
-      const stripe = getStripe();
-      if (!stripe) {
-        return NextResponse.json({ error: "Stripe client unavailable" }, { status: 500 });
-      }
-      try {
-        event = stripe.webhooks.constructEvent(
-          rawBody,
-          signature,
-          process.env.STRIPE_WEBHOOK_SECRET,
-        ) as unknown as ScaffoldStripeEvent;
-      } catch {
-        return NextResponse.json({ error: "Signature verification failed" }, { status: 400 });
-      }
-    } else {
-      try {
-        event = JSON.parse(rawBody) as ScaffoldStripeEvent;
-      } catch {
-        return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-      }
-    }
-
-    const type = event.type ?? "unknown";
-
-    // 4. Idempotency: claim the event id before processing. A replay (Stripe
-    //    retry) or an unreachable DB both short-circuit to "do not process".
-    let duplicate = false;
-    if (event.id) {
-      const claimed = await claimWebhookEvent("stripe", event.id, type);
-      if (!claimed) duplicate = true;
-    }
-    if (duplicate) {
+  // 3. Idempotency.
+  if (event.id) {
+    const claimed = await claimWebhookEvent("stripe", event.id, type);
+    if (!claimed) {
       return NextResponse.json({ received: true, type, processed: false, duplicate: true });
     }
-
-    // 5. Route the event to its processor and apply the entitlement.
-    let pending: PendingEntitlement | null = null;
-    switch (type) {
-      case "checkout.session.completed":
-        pending = processCheckoutCompleted(event);
-        break;
-      case "customer.subscription.updated":
-        pending = processSubscriptionUpdated(event);
-        break;
-      case "customer.subscription.deleted":
-        pending = processSubscriptionDeleted(event);
-        break;
-      case "invoice.payment_failed":
-        pending = processInvoicePaymentFailed(event);
-        break;
-      default:
-        pending = null;
-        break;
-    }
-
-    let processed = false;
-    let tier: Tier | null = null;
-    if (pending) {
-      const result = await applyEntitlement({
-        userId: pending.userId,
-        email: pending.email,
-        tier: pending.tier,
-        status: pending.status,
-        provider: "stripe",
-        providerRef: pending.providerRef,
-        currentPeriodEnd: pending.currentPeriodEnd ?? null,
-      });
-      processed = result.ok;
-      tier = result.tier ?? pending.tier ?? null;
-    }
-
-    // 6. Acknowledge receipt with 200 for every parseable event — including
-    //    unhandled types — so Stripe does not retry-storm. `processed` tells
-    //    the caller whether an entitlement row was actually written.
-    return NextResponse.json({
-      received: true,
-      type,
-      processed,
-      tier,
-      userId: pending?.userId ?? pending?.email ?? null,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 400 });
   }
+
+  // 4. Route the event to its processor.
+  let pending: PendingEntitlement | null = null;
+  switch (type) {
+    case "checkout.session.completed":
+      pending = processCheckoutCompleted(event);
+      break;
+    case "customer.subscription.updated":
+      pending = processSubscriptionUpdated(event);
+      break;
+    case "customer.subscription.deleted":
+      pending = processSubscriptionDeleted(event);
+      break;
+    case "invoice.payment_failed":
+      pending = processInvoicePaymentFailed(event);
+      break;
+  }
+
+  let processed = false;
+  let tier: Tier | null = null;
+  if (pending) {
+    const result = await applyEntitlement({
+      userId: pending.userId,
+      email: pending.email,
+      tier: pending.tier,
+      status: pending.status,
+      provider: "stripe",
+      providerRef: pending.providerRef,
+      currentPeriodEnd: pending.currentPeriodEnd ?? null,
+    });
+    if (result.dbUnavailable) {
+      if (event.id) await releaseWebhookEvent("stripe", event.id);
+      return NextResponse.json({ error: "Temporarily unavailable" }, { status: 500 });
+    }
+    processed = result.ok;
+    tier = result.tier ?? null;
+  }
+
+  // 5. 200 for every verified event (including unhandled types) so Stripe
+  //    does not retry-storm.
+  return NextResponse.json({ received: true, type, processed, tier });
 }
