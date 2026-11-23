@@ -6,6 +6,35 @@
 
 ---
 
+## v0.5.0 Changelog (this sprint)
+
+### Phase 5 — Community + Coaching (ENHANCED)
+
+- **Coach dashboard store wiring** — the Coach Dashboard view now uses the Zustand store as its persistence layer:
+  - Initializes athlete roster from `store.coachAthletes` if non-empty, falls back to seed data otherwise
+  - Type conversion layer between store's `CoachAthlete` (extended with `benchmarks`, `lastSessionDays`, `goals`) and the dashboard's `ManagedAthlete` display format
+  - `sendInvite` now calls `addCoachAthlete` so new athletes persist
+  - "Save notes" in the athlete detail modal now calls `updateCoachAthlete`
+  - `assignProgram` now calls `addCoachWorkout` (creating a `CoachWorkout` record with `allowAdaptation: false`) and `updateCoachAthlete` (appending the assignment to notes)
+  - `removeAthlete` now calls `removeCoachAthlete`
+- **CoachAthlete interface extended** with `benchmarks`, `lastSessionDays`, `goals`, and `injured`/`paused` status values
+
+### Testing — Integration Tests Added
+
+- **15 new API integration tests** in `src/app/api/__tests__/api.test.ts`:
+  - `POST /api/coach` (5 tests): invalid JSON → 400, missing question → 400, question >500 chars → 400, valid question → 200 with answer, toolsUsed array present
+  - `GET/POST /api/cron/weekly-summary` (4 tests): missing auth → 401, wrong secret → 401, correct secret → 200, POST with correct auth → 200
+  - `POST /api/webhooks/stripe` (6 tests): missing signature → 401, missing secret config → 500, invalid JSON → 400, checkout.session.completed → 200, customer.subscription.deleted → 200, unhandled event → 200
+- **Test total: 100 pass** (85 unit + 15 API integration) across 3 files
+- All tests use real `NextRequest` objects and call the actual route handlers
+
+### Test coverage status
+
+- **100 tests pass** (28 engine + 34 rules + 23 prediction/analysis + 15 API integration) via `bun test`
+- **Lint passes 0 errors** via `bun run lint`
+
+---
+
 ## v0.4.0 Changelog (this sprint)
 
 ### Phase 3 — Adaptive Training Engine (ENHANCED)
@@ -86,9 +115,9 @@
 | 0     | Foundation                 | COMPLETED  | Design system, database schema, scaffold, shared types, engine foundation         |
 | 1     | MVP Athlete Platform       | COMPLETED  | Auth (mock), onboarding, profile, all 4 modes, calendar, workouts, timers, analytics |
 | 2     | Mobile                     | SCAFFOLDED | Expo iOS/Android apps scaffolded; architecture in ARCHITECTURE.md                  |
-| 3     | Adaptive Training Engine   | COMPLETED  | Engine functions + auto-adapt + AI coach with real LLM + fallback; 85 unit tests pass |
+| 3     | Adaptive Training Engine   | COMPLETED  | Engine + auto-adapt + AI coach with recommendation storage + fallback; 100 tests pass |
 | 4     | Advanced Performance       | COMPLETED  | HYROX sim + station analytics + race predictions + result analysis + ATHX EPS + pairs + CrossFit benchmarks |
-| 5     | Community + Coaching       | COMPLETED  | Community (challenges, leaderboard, feed) + Coach dashboard + Gym platform (members, coaches, group programming) |
+| 5     | Community + Coaching       | COMPLETED  | Community + Coach dashboard (store-wired) + Gym platform (members, coaches, group programming) |
 | 6     | Commercial Launch          | SUBSTANTIAL| Subscriptions (5 tiers), Stripe webhook scaffold, Supabase migrations + RLS, vercel.json, cron jobs, privacy + terms pages |
 
 ---

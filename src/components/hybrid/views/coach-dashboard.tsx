@@ -101,7 +101,28 @@ const SEED_ATHLETES: ManagedAthlete[] = [
 
 export function CoachDashboardView() {
   const pushToast = useApp((s) => s.pushToast);
-  const [athletes, setAthletes] = useState<ManagedAthlete[]>(SEED_ATHLETES);
+  const storeAthletes = useApp((s) => s.coachAthletes);
+  const addCoachAthlete = useApp((s) => s.addCoachAthlete);
+  const updateCoachAthlete = useApp((s) => s.updateCoachAthlete);
+
+  // Convert store athletes to the local display format (seed fallback if empty)
+  const initialAthletes: ManagedAthlete[] = storeAthletes.length > 0
+    ? storeAthletes.map((a) => ({
+        id: a.id,
+        displayName: a.name,
+        mode: a.activeMode,
+        daysPerWeek: a.daysPerWeek,
+        benchmarks: a.benchmarks ?? {},
+        recentRPE: a.recentRPE ?? 0,
+        lastSessionDays: a.lastSessionDays ?? 999,
+        status: a.status === "ended" ? "paused" : a.status,
+        sessions: [],
+        notes: a.notes ?? "",
+        goals: a.goals ?? "",
+      }))
+    : SEED_ATHLETES;
+
+  const [athletes, setAthletes] = useState<ManagedAthlete[]>(initialAthletes);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TrainingMode | "all">("all");
   const [selected, setSelected] = useState<ManagedAthlete | null>(null);
@@ -143,16 +164,42 @@ export function CoachDashboardView() {
       goals: "",
     };
     setAthletes((prev) => [...prev, newAthlete]);
+    // Also persist to store
+    addCoachAthlete({
+      name,
+      email,
+      activeMode: "hyrox",
+      daysPerWeek: 4,
+      status: "pending",
+      notes: "Pending invitation acceptance.",
+    });
     setInviteOpen(false);
     pushToast({ kind: "success", title: `Invitation sent to ${name}`, body: `Status: pending. They'll appear active when accepted.` });
   }
 
   function assignProgram(athleteId: string, programName: string, sessions: ScheduledSession[]) {
+    const athlete = athletes.find((a) => a.id === athleteId);
     setAthletes((prev) => prev.map((a) =>
       a.id === athleteId
         ? { ...a, sessions: [...sessions], notes: `${a.notes}\n\nAssigned: ${programName}` }
         : a
     ));
+    // Persist to store as a CoachWorkout
+    if (athlete) {
+      useApp.getState().addCoachWorkout({
+        title: programName,
+        mode: athlete.mode,
+        type: "program",
+        description: `${sessions.length} sessions assigned to ${athlete.displayName}`,
+        movements: [],
+        assignedTo: [athleteId],
+        allowAdaptation: false,
+        notes: "Coach-assigned programming takes precedence over AI engine.",
+      });
+      useApp.getState().updateCoachAthlete(athleteId, {
+        notes: `${athlete.notes}\n\nAssigned: ${programName}`,
+      });
+    }
     pushToast({
       kind: "success",
       title: "Program assigned",
@@ -162,6 +209,8 @@ export function CoachDashboardView() {
 
   function removeAthlete(id: string) {
     setAthletes((prev) => prev.filter((a) => a.id !== id));
+    // Also remove from store
+    useApp.getState().removeCoachAthlete(id);
     pushToast({ kind: "info", title: "Athlete removed", body: "They will be notified by email." });
   }
 
@@ -485,7 +534,10 @@ function AthleteDetailModal({
               placeholder="Notes only you can see. Use for tracking niggles, motivation, scheduling conflicts."
             />
             <button
-              onClick={() => useApp.getState().pushToast({ kind: "success", title: "Notes saved", body: "Visible only to you." })}
+              onClick={() => {
+                useApp.getState().updateCoachAthlete(athlete.id, { notes });
+                useApp.getState().pushToast({ kind: "success", title: "Notes saved", body: "Visible only to you." });
+              }}
               className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs font-medium hover:bg-secondary transition"
             >
               <Check className="w-3 h-3" /> Save notes

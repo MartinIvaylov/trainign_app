@@ -84,8 +84,17 @@ export interface CoachAthlete {
   lastSessionDate?: string;
   recentRPE?: number;
   notes?: string;
-  status: "active" | "pending" | "ended";
+  status: "active" | "pending" | "ended" | "injured" | "paused";
   addedAt: string;
+  // Extended fields for the coach dashboard
+  benchmarks?: {
+    fiveKmSec?: number;
+    backSquatKg?: number;
+    deadliftKg?: number;
+    franSec?: number;
+  };
+  lastSessionDays?: number;
+  goals?: string;
 }
 
 export interface CoachWorkout {
