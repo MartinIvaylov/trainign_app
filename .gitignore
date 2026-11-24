@@ -54,3 +54,8 @@ server.log
 # Skills directory
 /skills/
 tool-results/
+
+# local databases / runtime files (never commit)
+/db/*.db
+/db/*.db-journal
+*.pid
