@@ -195,7 +195,7 @@ export function SettingsView() {
       }
       if (data.mode === "stripe" && data.url) {
         // Real Stripe hosted checkout — the webhook completes the flow.
-        window.location.href = data.url;
+        window.location.assign(data.url);
         return;
       }
       // Preview mode: entitlement already written server-side.
@@ -242,7 +242,7 @@ export function SettingsView() {
         return;
       }
       if (data.mode === "stripe" && data.url) {
-        window.location.href = data.url;
+        window.location.assign(data.url);
         return;
       }
       pushToast({

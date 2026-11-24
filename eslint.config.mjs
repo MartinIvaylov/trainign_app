@@ -23,6 +23,9 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "react/display-name": "off",
     "react/prop-types": "off",
     "react-compiler/react-compiler": "off",
+    // React Compiler optimisation advisories — keep visible, don't fail lint.
+    "react-hooks/preserve-manual-memoization": "warn",
+    "react-hooks/set-state-in-effect": "warn",
     
     // Next.js rules
     "@next/next/no-img-element": "off",

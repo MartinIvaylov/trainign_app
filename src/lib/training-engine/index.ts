@@ -650,7 +650,7 @@ export function analyzeRaceResult(input: RaceResultInput): RaceResultAnalysis {
       ? (() => {
           const delta = input.finishSec - input.targetSec;
           const pct = (delta / input.targetSec) * 100;
-          const verdict = Math.abs(pct) < 1 ? "on_target" : delta < 0 ? "faster" : "slower";
+          const verdict: "faster" | "slower" | "on_target" = Math.abs(pct) < 1 ? "on_target" : delta < 0 ? "faster" : "slower";
           return { deltaSec: delta, pct: Math.round(pct * 10) / 10, verdict };
         })()
       : null;
@@ -660,7 +660,7 @@ export function analyzeRaceResult(input: RaceResultInput): RaceResultAnalysis {
       ? (() => {
           const delta = input.finishSec - input.previousResultSec;
           const pct = (delta / input.previousResultSec) * 100;
-          const verdict = Math.abs(pct) < 0.5 ? "same" : delta < 0 ? "improved" : "regressed";
+          const verdict: "improved" | "regressed" | "same" = Math.abs(pct) < 0.5 ? "same" : delta < 0 ? "improved" : "regressed";
           return { deltaSec: delta, pct: Math.round(pct * 10) / 10, verdict };
         })()
       : { deltaSec: 0, pct: 0, verdict: "first_race" as const };

@@ -3,19 +3,9 @@
   "framework": "nextjs",
   "buildCommand": "bun run build",
   "installCommand": "bun install",
-  "outputDirectory": ".next/standalone",
-  "regions": ["fra1"],
-  "env": {
-    "NEXTAUTH_URL": "@nextauth-url",
-    "NEXTAUTH_SECRET": "@nextauth-secret",
-    "DATABASE_URL": "@database-url",
-    "STRIPE_SECRET_KEY": "@stripe-secret-key",
-    "STRIPE_WEBHOOK_SECRET": "@stripe-webhook-secret",
-    "SUPABASE_URL": "@supabase-url",
-    "SUPABASE_ANON_KEY": "@supabase-anon-key",
-    "SUPABASE_SERVICE_ROLE_KEY": "@supabase-service-role-key",
-    "ZAI_API_KEY": "@zai-api-key"
-  },
+  "regions": [
+    "fra1"
+  ],
   "crons": [
     {
       "path": "/api/cron/weekly-summary",

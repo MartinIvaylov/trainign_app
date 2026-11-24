@@ -9,7 +9,7 @@ import { NextRequest } from "next/server";
 import { POST as coachPOST } from "@/app/api/coach/route";
 import { GET as cronGET, POST as cronPOST } from "@/app/api/cron/weekly-summary/route";
 
-function makeRequest(url: string, init?: RequestInit): NextRequest {
+function makeRequest(url: string, init?: ConstructorParameters<typeof NextRequest>[1]): NextRequest {
   return new NextRequest(url, init);
 }
 

@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { useApp } from "@/store/app-store";
 import { Card, PageHeader, SectionTitle, StatCard, MiniBar, EmptyState } from "@/components/hybrid/blocks/ui";
 import { MODE_META } from "@/types";
-import { formatHMS, formatPace, HYROX_STATIONS } from "@/lib/competition-rules/hyrox";
+import { formatHMS, formatPace, HYROX_STATIONS, simulateHyrox } from "@/lib/competition-rules/hyrox";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
   AreaChart, Area, BarChart, Bar, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -50,6 +50,12 @@ export function PerformanceView() {
 
   // HYROX station performance from last simulation
   const lastSim = hyroxSims[0];
+  // Saved simulations only store splits — derive strongest/weakest here
+  // (reading them off the saved object crashed this view).
+  const lastSimAnalysis = useMemo(
+    () => (lastSim ? simulateHyrox({ runSplits: lastSim.runSplits, stationSplits: lastSim.stationSplits, transitionsSec: lastSim.transitionsSec }) : null),
+    [lastSim],
+  );
 
   // Strength radar (from benchmarks)
   const radar = useMemo(() => {
@@ -212,7 +218,7 @@ export function PerformanceView() {
                       <MiniBar
                         value={total}
                         max={max}
-                        color={i + 1 === lastSim.weakest.index ? "var(--destructive)" : i + 1 === lastSim.strongest.index ? "var(--success)" : "var(--primary)"}
+                        color={i + 1 === lastSimAnalysis?.weakest.index ? "var(--destructive)" : i + 1 === lastSimAnalysis?.strongest.index ? "var(--success)" : "var(--primary)"}
                         height={8}
                       />
                     </div>
@@ -261,7 +267,7 @@ export function PerformanceView() {
   );
 }
 
-function Row({ icon: Icon, kind, label, body }: { icon: React.ComponentType<{ className?: string }>; kind: "up" | "down" | "neutral"; label: string; body: string }) {
+function Row({ icon: Icon, kind, label, body }: { icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>; kind: "up" | "down" | "neutral"; label: string; body: string }) {
   const color = kind === "up" ? "var(--success)" : kind === "down" ? "var(--destructive)" : "var(--muted-foreground)";
   return (
     <div className="flex items-start gap-3 p-3 rounded-md border border-border bg-secondary/20">

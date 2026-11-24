@@ -9,13 +9,24 @@ import { HYROX_STATIONS } from "@/lib/competition-rules/hyrox";
 import { motion } from "framer-motion";
 import { Dumbbell, Plus, Search, Play, ChevronRight } from "lucide-react";
 
+interface LibraryWorkout {
+  id: string;
+  title: string;
+  mode: TrainingMode;
+  type: string;
+  duration?: string;
+  description: string;
+  rx?: string;
+  movements: { name: string; reps?: string; note?: string }[];
+}
+
 export function WorkoutsView() {
   const setAppView = useApp((s) => s.setAppView);
   const activeMode = useApp((s) => s.activeMode);
   const [filter, setFilter] = useState<TrainingMode | "all">("all");
   const [query, setQuery] = useState("");
 
-  const all = useMemo(() => {
+  const all = useMemo((): LibraryWorkout[] => {
     const cf = CROSSFIT_BENCHMARKS.map((b) => ({
       id: `cf-${b.slug}`,
       title: b.name,

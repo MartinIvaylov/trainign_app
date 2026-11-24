@@ -7,8 +7,8 @@ import {
   ArrowLeft, ArrowRight, Calendar, Dumbbell, Heart, Target, User,
   Check, Activity, Settings, Trophy, Footprints,
 } from "lucide-react";
-import {
-  AthleteProfileLite, AthletePreferencesLite, Background, BenchmarkInput,
+import type {
+  AthleteProfileLite, AthletePreferencesLite, Background, BenchmarkInput as BenchmarkValues,
   Equipment, GoalFocus, OnboardingData, TrainingMode,
 } from "@/types";
 import { HYROX_DIVISIONS, formatHMS } from "@/lib/competition-rules/hyrox";
@@ -31,7 +31,7 @@ export function OnboardingFlow() {
     equipment: ["home_gym", "dumbbells", "kettlebells", "barbells"],
     location: "home_gym",
   });
-  const [benchmarks, setBenchmarks] = useState<BenchmarkInput>({});
+  const [benchmarks, setBenchmarks] = useState<BenchmarkValues>({});
   const [goal, setGoal] = useState<GoalFocus>("improve_overall");
   const [competition, setCompetition] = useState<{
     enabled: boolean;
