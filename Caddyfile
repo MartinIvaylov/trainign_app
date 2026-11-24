@@ -1,6 +1,10 @@
 :81 {
+	# Mini-service passthrough (e.g. the websocket example on :3003), reached
+	# via `?XTransformPort=<port>`. Only explicitly allow-listed ports are
+	# proxied — forwarding to an arbitrary localhost port would expose every
+	# internal service on the box. Add a port here when you add a mini-service.
 	@transform_port_query {
-		query XTransformPort=*
+		query XTransformPort=3003
 	}
 
 	handle @transform_port_query {

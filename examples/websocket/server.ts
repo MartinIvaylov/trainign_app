@@ -5,8 +5,10 @@ const httpServer = createServer()
 const io = new Server(httpServer, {
   // DO NOT change the path, it is used by Caddy to forward the request to the correct port
   path: '/',
+  // Reached same-origin through the Caddy proxy, so no cross-origin access
+  // is needed. Set ALLOWED_ORIGIN to allow one specific external origin.
   cors: {
-    origin: "*",
+    origin: process.env.ALLOWED_ORIGIN ?? false,
     methods: ["GET", "POST"]
   },
   pingTimeout: 60000,

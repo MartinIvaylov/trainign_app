@@ -82,7 +82,13 @@ export function CoachView() {
           history: messages,
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || res.status === 429) {
+        // Quota / session problems: show the server's explanation, not a
+        // generic outage message.
+        setMessages((m) => [...m, { role: "assistant", content: data.error ?? "Please try again later." }]);
+        return;
+      }
       if (!res.ok) throw new Error(data.error ?? "Coach error");
       setMessages((m) => [
         ...m,

@@ -19,28 +19,34 @@
 // timestamped acknowledgement so the cron pipeline is wired up end-to-end.
 // =============================================================================
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Authenticate the cron invocation. Vercel Cron sends the request from a
- * trusted internal network, but we still verify a shared secret to prevent
- * abuse if the endpoint is ever hit from the public internet. If
- * `CRON_SECRET` is unset we allow the call — useful in local dev — but log
- * a warning so the operator remembers to set it in production.
+ * Authenticate the cron invocation. Vercel Cron sends
+ * `Authorization: Bearer $CRON_SECRET` automatically when CRON_SECRET is set
+ * on the project. Production fails closed without it; local development
+ * allows unauthenticated calls for convenience.
  */
-function authenticate(req: NextRequest): { ok: boolean; reason?: string } {
+function authenticate(req: NextRequest): { ok: boolean; status?: number; reason?: string } {
   const configured = process.env.CRON_SECRET;
   if (!configured) {
-    // Local dev convenience. Production MUST set CRON_SECRET.
+    if (process.env.NODE_ENV === "production") {
+      console.error("[cron] CRON_SECRET is not set — refusing to run");
+      return { ok: false, status: 503, reason: "Cron is not configured" };
+    }
     return { ok: true, reason: "CRON_SECRET not set (development mode)" };
   }
   const auth = req.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  if (!token) return { ok: false, reason: "Missing Authorization Bearer token" };
-  if (token !== configured) return { ok: false, reason: "Invalid bearer token" };
+  if (!token) return { ok: false, status: 401, reason: "Missing Authorization Bearer token" };
+  // Constant-time comparison (hash both sides so lengths always match).
+  const a = createHash("sha256").update(token).digest();
+  const b = createHash("sha256").update(configured).digest();
+  if (!timingSafeEqual(a, b)) return { ok: false, status: 401, reason: "Invalid bearer token" };
   return { ok: true };
 }
 
@@ -49,7 +55,7 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) {
     return NextResponse.json(
       { ok: false, error: auth.reason ?? "Unauthorized" },
-      { status: 401 },
+      { status: auth.status ?? 401 },
     );
   }
 
